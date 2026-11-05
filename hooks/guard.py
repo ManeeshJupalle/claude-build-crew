@@ -33,6 +33,8 @@ HOOK_SKIP_ENV = re.compile(r"^(HUSKY=0|HUSKY_SKIP_HOOKS=|HUSKY_SKIP_INSTALL=|SKI
 # git's global options that take the next word as their value
 GIT_VALUE_OPTIONS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--attr-source",
                      "--shallow-file", "--super-prefix"}
+GH_API_VALUE_OPTIONS = {"--method", "--field", "--raw-field", "--header", "--preview", "--jq", "--template", "--input",
+                        "--hostname", "--cache"}
 CONFIG_READ_WORDS = {"--local", "--global", "--system", "--worktree", "--show-origin", "--show-scope", "-z", "--null",
                      "--get", "--get-all", "get", "--all"}
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "mksh", "ash", "fish", "csh", "tcsh"}
@@ -341,14 +343,20 @@ def check_git(args: list[str], state: dict) -> str | None:
 
     if sub == "config":  # reading core.hooksPath or an alias is fine; setting or unsetting one isn't
         words = [a.lower() for a in rest]
-        key = next((w for w in words if w == "core.hookspath" or w.startswith("alias.")), None)
-        # a read names the key last: after a key, git takes even "--local" as the value to set
+        key = next((w for w in words if w == "core.hookspath" or w.startswith(("alias.", "include.", "includeif."))),
+                   None)
+        # a read names the key last, with nothing after it: git takes even "--local" or a quoted '2>/dev/null' as the
+        # value to set, and the guard can't tell a quoted word from a redirect, so a read can't carry one
         if key and not (words[-1] == key and all(w in CONFIG_READ_WORDS for w in words[:-1])):
-            return ("Changing core.hooksPath skips git hooks; forbidden." if key == "core.hookspath" else
-                    "Defining a git alias can hide what a command runs; forbidden.")
-        if "core" in words and any(w in ("remove-section", "rename-section") or long_opt(w, "--remove-section",
-                                                                                         "--rename-section") for w in words):
-            return "Removing or renaming git's core section drops core.hooksPath; forbidden."
+            return (f"Changing {key} " + ("skips git hooks" if key == "core.hookspath" else
+                                           "can hide what a command runs" if key.startswith("alias.") else
+                                           "can change hooks or aliases through another file")
+                    + "; forbidden. To read it: git config --get " + key + ", with nothing after it.")
+        section = [w for w in words if w in ("remove-section", "rename-section")
+                   or long_opt(w, "--remove-section", "--rename-section")]
+        # dropping core drops core.hooksPath; renaming a section to alias makes its keys aliases
+        if section and ("core" in words or "alias" in words and any("rename" in w for w in section)):
+            return "Removing or renaming git's core section, or renaming one to alias, changes hooks or aliases; forbidden."
         return None
 
     if sub == "commit":
@@ -430,6 +438,21 @@ def gh_api_method(args: list[str]) -> str:
     return (method or ("POST" if fields else "GET")).upper()
 
 
+def gh_api_endpoint(args: list[str]) -> str:
+    """The first word after `gh api` that isn't an option or an option's value: the path, or graphql."""
+    k = 1
+    while k < len(args):
+        a = args[k]
+        if a.startswith("--"):
+            k += 2 if "=" not in a and a in GH_API_VALUE_OPTIONS else 1
+        elif a.startswith("-") and len(a) > 1:
+            short = next((n for n, c in enumerate(a[1:], 1) if c != "i"), None)  # -i takes no value
+            k += 2 if short is not None and short == len(a) - 1 and a[short] in "XfFHpqt" else 1
+        else:
+            return a
+    return ""
+
+
 def check_gh(args: list[str]) -> str | None:
     if args[:2] == ["pr", "merge"]:
         return "Merging is done by code, not by an agent: run gates/merge_gate.py <PR> --merge."
@@ -440,9 +463,10 @@ def check_gh(args: list[str]) -> str | None:
         if (re.search(r"pulls/\d+/merge\b", joined) or re.search(r"/merges\b", joined)
                 or re.search(r"(mergePullRequest|enablePullRequestAutoMerge|mergeBranch)", joined)):
             return "Merging through the API is forbidden: use gates/merge_gate.py."
-        if re.search(r"\b(createRef|updateRefs?|deleteRef|(create|update|delete)BranchProtectionRule)\b", joined):
+        if re.search(r"\b(createRef|updateRefs?|deleteRef|(create|update|delete)(BranchProtectionRule|RepositoryRuleset))\b",
+                     joined):
             return "Changing branches, refs or protection rules through the API is forbidden."
-        if ("graphql" not in args and gh_api_method(args) != "GET"  # GraphQL is always POST: its mutations count
+        if (gh_api_endpoint(args) != "graphql" and gh_api_method(args) != "GET"  # GraphQL is always POST: its mutations count
                 and re.search(r"(branches|protection|rulesets|git/refs)", joined)):
             return "Changing branches, refs or protection rules through the API is forbidden."
     return None

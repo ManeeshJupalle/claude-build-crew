@@ -42,6 +42,14 @@ BLOCKED = [
     "git push --branches origin",
     "git push origin 'refs/heads/*:refs/heads/*'",
     "gh api -iXDELETE repos/o/r/git/refs/heads/x",
+    "gh api -X DELETE repos/o/r/git/refs/heads/feat/x -t graphql",   # graphql is a value here, not the endpoint
+    "gh api -X DELETE repos/o/r/git/refs/heads/feat/x --jq graphql",
+    "gh api -X DELETE repos/o/r/git/refs/heads/feat/x -p graphql",
+    "gh api graphql -f query='mutation { deleteRepositoryRuleset(input: {}) { clientMutationId } }'",
+    "git config --rename-section foo alias",           # git config foo.p 'push --force' first, then git p
+    "git config include.path /tmp/x.gitconfig",        # an included file can set hooksPath or aliases
+    "git config includeIf.onbranch:feat/x.path /tmp/x.gitconfig",
+    "git config core.hooksPath '2>/dev/null'",         # the guard can't tell a quoted value from a redirect
     "gh api repos/o/r/branches/main/rename -fnew_name=old-main",
     "gh api graphql -f query='mutation { deleteRef(input: {refId: \"x\"}) { clientMutationId } }'",
     "git push --mir origin",                           # git takes any unique prefix of a long option
@@ -263,6 +271,9 @@ ALLOWED = [
     "gh api repos/o/r/git/refs/heads/main",
     "gh api repos/o/r/pulls -f title=x -f head=feat/x -f base=main",
     "gh api -i repos/o/r/branches",
+    "gh api graphql -f query='query { viewer { login } }'",
+    "gh api repos/o/r/git/refs/heads/x --jq .object.sha",
+    "git config --get include.path",
     "gh api graphql -f query='{ repository(owner: \"o\", name: \"r\") { rulesets(first: 5) { totalCount } } }'",
     "git config --get-regexp alias",
     "git config --get alias.st",
