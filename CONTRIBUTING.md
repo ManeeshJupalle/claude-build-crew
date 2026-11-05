@@ -24,6 +24,7 @@ hooks/       guard (blocks dangerous commands) + session start (loads handoff)
 run.sh       runs gates and the guard with whichever Python the OS has (python3, python or py)
 tests/       pytest for every gate, the guard, install/uninstall, plus layout checks
 examples/    sample HOW_IT_WORKS.md and PLAN.md
+evals/       `claude plugin eval` cases: the same task with and without build-crew (macOS or Linux)
 ```
 
 ## Adding a gate
