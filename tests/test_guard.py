@@ -61,6 +61,10 @@ BLOCKED = [
     "echo '{\"query\":\"mutation { deleteRef }\"}' | gh api https://api.github.com/graphql --input -",
     "gh api /graphql --input -",
     "gh api graphql -iFquery=@-",
+    "gh api 'graphql?x=1' --input -",                  # still reaches GraphQL
+    "gh api 'https://api.github.com/graphql?x=1' --input -",
+    "gh api /GraphQL -F query=@q.graphql",
+    "gh api -X DELETE repos/o/r/git/refs/heads/graphql",  # a branch named graphql is still a ref
     "git config --rename-section foo includeIf",       # a section, not a key: main allows it
     "GIT_CONFIG_GLOBAL=/tmp/x.gitconfig git p",        # another config file, like include.path
     "git_config_system=/tmp/x.gitconfig git status",

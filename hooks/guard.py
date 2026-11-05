@@ -471,10 +471,13 @@ def check_gh(args: list[str]) -> str | None:
                      joined):
             return "Changing branches, refs or protection rules through the API is forbidden."
         # a GraphQL query read from stdin or a file (--input, query=@-, query=@file) can't be checked for mutations
-        graphql = re.fullmatch(r"(https?://[^/]+(/api)?)?/?graphql", gh_api_endpoint(args)) is not None
-        if graphql and any(a == "--input" or a.startswith("--input=") or
-                           re.match(r"(-i*[fF]|--(raw-)?field=?)?\w*=@", a) for a in args):
+        endpoint = gh_api_endpoint(args)
+        # refusing is safe, so any endpoint that may reach GraphQL counts (graphql?x=1, /GraphQL, full URLs) ...
+        if re.search(r"graphql", endpoint, re.I) and any(a == "--input" or a.startswith("--input=") or
+                                                         re.match(r"(-i*[fF]|--(raw-)?field=?)?\w*=@", a) for a in args):
             return "A GraphQL query read from stdin or a file can't be verified; pass it with -f query='…'."
+        # ... but skipping the REST rule isn't, so only an exact GraphQL endpoint does: not .../git/refs/heads/graphql
+        graphql = re.fullmatch(r"(https?://[^/]+(/api)?)?/?graphql", endpoint) is not None
         if (not graphql and gh_api_method(args) != "GET"  # GraphQL is always POST: its mutations count
                 and re.search(r"(branches|protection|rulesets|git/refs)", joined)):
             return "Changing branches, refs or protection rules through the API is forbidden."
