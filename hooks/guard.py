@@ -307,6 +307,8 @@ def check_git(args: list[str], state: dict) -> str | None:
             return "Overriding core.hooksPath skips git hooks; forbidden."
         if setting.startswith("alias."):  # git -c alias.p='push --force' p
             return "Defining a git alias can hide what a command runs; forbidden."
+        if setting.startswith(("include.", "includeif.")):  # the included file can define aliases or hooksPath
+            return "Including another config file can change hooks or aliases; forbidden."
         if opt in GIT_VALUE_OPTIONS and value is None:
             i += 2
             continue
@@ -355,7 +357,9 @@ def check_git(args: list[str], state: dict) -> str | None:
         section = [w for w in words if w in ("remove-section", "rename-section")
                    or long_opt(w, "--remove-section", "--rename-section")]
         # dropping core drops core.hooksPath; renaming a section to alias makes its keys aliases
-        if section and ("core" in words or "alias" in words and any("rename" in w for w in section)):
+        renames = any(w == "rename-section" or long_opt(w, "--rename-section") for w in section)  # also --ren
+        if section and ("core" in words or renames and any(w in ("alias", "include") or w.startswith("includeif")
+                                                           for w in words)):
             return "Removing or renaming git's core section, or renaming one to alias, changes hooks or aliases; forbidden."
         return None
 
@@ -466,6 +470,10 @@ def check_gh(args: list[str]) -> str | None:
         if re.search(r"\b(createRef|updateRefs?|deleteRef|(create|update|delete)(BranchProtectionRule|RepositoryRuleset))\b",
                      joined):
             return "Changing branches, refs or protection rules through the API is forbidden."
+        # a GraphQL query read from stdin or a file (--input, query=@-, query=@file) can't be checked for mutations
+        if gh_api_endpoint(args) == "graphql" and any(a == "--input" or a.startswith("--input=") or
+                                                      re.match(r"(-[fF]|--(raw-)?field=?)?\w*=@", a) for a in args):
+            return "A GraphQL query read from stdin or a file can't be verified; pass it with -f query='…'."
         if (gh_api_endpoint(args) != "graphql" and gh_api_method(args) != "GET"  # GraphQL is always POST: its mutations count
                 and re.search(r"(branches|protection|rulesets|git/refs)", joined)):
             return "Changing branches, refs or protection rules through the API is forbidden."
