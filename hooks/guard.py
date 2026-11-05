@@ -26,15 +26,15 @@ SEPARATORS = {"&&", "||", ";", "|", "&", "\n", "|&", ";;"}
 WRAPPERS = {"sudo", "command", "exec", "time", "nice", "ionice", "nohup", "env", "xargs", "timeout",
             "stdbuf", "caffeinate", "chronic"}
 WRAPPER_VALUE_FLAGS = {"-u", "-g", "-n", "-s", "-k", "-c", "-p", "-o", "-e", "-i", "--signal", "--kill-after", "--user"}
-# any case: Windows environment variable names are case-insensitive, so git_config_parameters works there too
+# git config from the environment, in any case: Windows names ignore case, so git_config_parameters works there.
+# Not HUSKY or SKIP: lowercase skip=1 is an everyday shell variable.
 HOOK_SKIP_ENV = re.compile(r"^(HUSKY=0|HUSKY_SKIP_HOOKS=|HUSKY_SKIP_INSTALL=|SKIP=|PRE_COMMIT_ALLOW_NO_CONFIG=|GIT_HOOKS_PATH="
-                           r"|GIT_CONFIG_PARAMETERS=|GIT_CONFIG_COUNT=|GIT_CONFIG_KEY_\d+=)", re.I)  # git config from env
+                           r"|(?i:GIT_CONFIG_PARAMETERS=|GIT_CONFIG_COUNT=|GIT_CONFIG_KEY_\d+=))")
 # git's global options that take the next word as their value
 GIT_VALUE_OPTIONS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--attr-source",
                      "--shallow-file", "--super-prefix"}
-CONFIG_SCOPES = {"--local", "--global", "--system", "--worktree", "--show-origin", "--show-scope", "-z", "--null"}
-CONFIG_READS = (["core.hookspath"], ["--get", "core.hookspath"], ["--get-all", "core.hookspath"],
-                ["get", "core.hookspath"], ["get", "--all", "core.hookspath"])
+CONFIG_READ_WORDS = {"--local", "--global", "--system", "--worktree", "--show-origin", "--show-scope", "-z", "--null",
+                     "--get", "--get-all", "get", "--all"}
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "mksh", "ash", "fish", "csh", "tcsh"}
 KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "export"}  # what follows is a command
 PLACEHOLDERS = {c: chr(0xE000 + n) for n, c in enumerate(";&|\n(){}#<")}  # stand-ins for quoted separators
@@ -300,9 +300,11 @@ def check_git(args: list[str], state: dict) -> str | None:
     i = 0
     while i < len(args) and args[i].startswith("-"):
         opt, value = args[i].split("=", 1) if args[i].startswith("--config-env=") else (args[i], None)
-        if opt in ("-c", "--config-env") and (value or (args[i + 1] if i + 1 < len(args) else "")).lower().startswith(
-                "core.hookspath"):
+        setting = (value or (args[i + 1] if i + 1 < len(args) else "")).lower() if opt in ("-c", "--config-env") else ""
+        if setting.startswith("core.hookspath"):
             return "Overriding core.hooksPath skips git hooks; forbidden."
+        if setting.startswith("alias."):  # git -c alias.p='push --force' p
+            return "Defining a git alias can hide what a command runs; forbidden."
         if opt in GIT_VALUE_OPTIONS and value is None:
             i += 2
             continue
@@ -320,7 +322,7 @@ def check_git(args: list[str], state: dict) -> str | None:
                 return "Force push is forbidden."
             if long_opt(a, "--no-verify"):
                 return "Skipping git hooks (--no-verify) is forbidden."
-            if long_opt(a, "--all", "--delete", "--prune") or "d" in short_flags(a):
+            if long_opt(a, "--all", "--branches", "--delete", "--prune") or "d" in short_flags(a):
                 return f"git push {a} is forbidden; push one feature branch."
         refspecs = positionals[1:]
         branch = state.get("branch") or current_branch()
@@ -329,16 +331,21 @@ def check_git(args: list[str], state: dict) -> str | None:
                 return "Force push (+refspec) is forbidden."
             if r.startswith(":"):
                 return f"git push {r} deletes a remote branch; forbidden. Push one feature branch."
+            if "*" in r:  # refs/heads/*:refs/heads/* pushes main too
+                return f"git push {r} pushes many branches; forbidden. Push one feature branch."
             if is_protected_ref(r, branch):
                 return "Pushing to a protected branch is forbidden. Open a PR."
         if not refspecs and PROTECTED.match(branch or "x"):
             return f"You are on protected branch '{branch}'. Create a feature branch first."
         return None
 
-    if sub == "config":  # reading core.hooksPath is fine; setting or unsetting it changes which hooks run
+    if sub == "config":  # reading core.hooksPath or an alias is fine; setting or unsetting one isn't
         words = [a.lower() for a in rest]
-        if "core.hookspath" in words and [w for w in words if w not in CONFIG_SCOPES] not in CONFIG_READS:
-            return "Changing core.hooksPath skips git hooks; forbidden."
+        key = next((w for w in words if w == "core.hookspath" or w.startswith("alias.")), None)
+        # a read names the key last: after a key, git takes even "--local" as the value to set
+        if key and not (words[-1] == key and all(w in CONFIG_READ_WORDS for w in words[:-1])):
+            return ("Changing core.hooksPath skips git hooks; forbidden." if key == "core.hookspath" else
+                    "Defining a git alias can hide what a command runs; forbidden.")
         if "core" in words and any(w in ("remove-section", "rename-section") or long_opt(w, "--remove-section",
                                                                                          "--rename-section") for w in words):
             return "Removing or renaming git's core section drops core.hooksPath; forbidden."
@@ -401,6 +408,28 @@ def check_git(args: list[str], state: dict) -> str | None:
     return None
 
 
+def gh_api_method(args: list[str]) -> str:
+    """The HTTP method gh api sends: -X/--method (also -XDELETE, -iXDELETE, --method=DELETE), else POST when there
+    are fields or input (-f, -F, also -fname=x), else GET."""
+    method, fields = None, False
+    for k, a in enumerate(args):
+        if a in ("--method", "-X") and k + 1 < len(args):
+            method = args[k + 1]
+        elif a.startswith("--method="):
+            method = a.split("=", 1)[1]
+        elif a in ("--field", "--raw-field", "--input") or a.startswith(("--field=", "--raw-field=", "--input=")):
+            fields = True
+        elif a.startswith("-") and not a.startswith("--"):
+            for n, c in enumerate(a[1:], 1):  # a cluster: -i takes no value; the first flag that does ends it
+                if c == "X":
+                    method = a[n + 1:].lstrip("=") or (args[k + 1] if k + 1 < len(args) else "")
+                elif c in "fF":
+                    fields = True
+                if c != "i":
+                    break
+    return (method or ("POST" if fields else "GET")).upper()
+
+
 def check_gh(args: list[str]) -> str | None:
     if args[:2] == ["pr", "merge"]:
         return "Merging is done by code, not by an agent: run gates/merge_gate.py <PR> --merge."
@@ -411,15 +440,10 @@ def check_gh(args: list[str]) -> str | None:
         if (re.search(r"pulls/\d+/merge\b", joined) or re.search(r"/merges\b", joined)
                 or re.search(r"(mergePullRequest|enablePullRequestAutoMerge|mergeBranch)", joined)):
             return "Merging through the API is forbidden: use gates/merge_gate.py."
-        # gh sends POST when there are fields or input and no -X; -X DELETE, -XDELETE and --method=DELETE all set it
-        method = "POST" if any(a in ("-f", "-F", "--field", "--raw-field", "--input") or a.startswith(("--field=",
-                               "--raw-field=", "--input=")) for a in args) else "GET"
-        for k, a in enumerate(args):
-            if a in ("-X", "--method") and k + 1 < len(args):
-                method = args[k + 1].upper()
-            elif a.startswith("--method=") or (a.startswith("-X") and len(a) > 2):
-                method = a.split("=", 1)[1].upper() if a.startswith("--") else a[2:].lstrip("=").upper()
-        if method != "GET" and re.search(r"(branches|protection|rulesets|git/refs)", joined):
+        if re.search(r"\b(createRef|updateRefs?|deleteRef|(create|update|delete)BranchProtectionRule)\b", joined):
+            return "Changing branches, refs or protection rules through the API is forbidden."
+        if ("graphql" not in args and gh_api_method(args) != "GET"  # GraphQL is always POST: its mutations count
+                and re.search(r"(branches|protection|rulesets|git/refs)", joined)):
             return "Changing branches, refs or protection rules through the API is forbidden."
     return None
 
