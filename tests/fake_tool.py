@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """A stand-in for npm, pip-audit and the virtualenv's python, driven by a JSON file (FAKE_TOOL_STATE).
 
-The file maps "outdated", "audit", "pip list --not-required", "pip list --outdated", "site" and
-"pip-audit" to {"stdout", "stderr", "code"}.
+The file maps "outdated", "audit", "pip list --not-required", "pip list --outdated", "pip list --uptodate",
+"site" and "pip-audit" to {"stdout", "stderr", "code"}, and each call's arguments are appended to "calls".
 """
 import json
 import os
 import sys
 
-state = json.load(open(os.environ["FAKE_TOOL_STATE"], encoding="utf-8"))
+path = os.environ["FAKE_TOOL_STATE"]
+state = json.load(open(path, encoding="utf-8"))
+state.setdefault("calls", []).append(sys.argv[1:])
+json.dump(state, open(path, "w", encoding="utf-8"))
 args = [a for a in sys.argv[1:] if a != "-m"]
 key = ("pip list " + args[2] if args[0] == "pip" else
        "site" if args[0] == "-c" else

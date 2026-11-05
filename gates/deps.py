@@ -101,12 +101,31 @@ def npm_deps(root: Path, found: dict, checks: list) -> None:
     checks.append({"name": "npm audit", "status": "PASS"})
     for n, v in vulns.items():
         d = found.setdefault(("npm", n), {"ecosystem": "npm", "name": n})
-        d.update(vulnerable=True, severity=v.get("severity"), direct=bool(v.get("isDirect")), fix=v.get("fixAvailable"),
+        d.update(vulnerable=True, severity=v.get("severity"), direct=bool(v.get("isDirect")), **npm_fix(n, v.get("fixAvailable")),
                  advisories=sorted({a.get("url") or str(a.get("source")) for a in v.get("via", []) if isinstance(a, dict)}))
+
+
+def npm_fix(name: str, fa) -> dict:
+    """npm's fixAvailable: a version of this package, a version of the one that pulls it in, `npm audit fix`, or none."""
+    if isinstance(fa, dict):
+        if fa.get("name") == name:
+            return {"fix": [fa.get("version")]}
+        return {"fix": [], "fix_via": f"{fa.get('name')}@{fa.get('version')}"}
+    return {"fix": [], **({"fix_via": "npm audit fix"} if fa else {})}
 
 
 def canon(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def venv_tools(root: Path) -> set[str]:
+    """pip, setuptools and wheel come with the virtualenv, unless the project's own requirements name them."""
+    texts = [p.read_text(encoding="utf-8", errors="replace") for p in root.glob("requirements*.txt")]
+    py = root / "pyproject.toml"
+    if py.exists():  # leave out [build-system]: what the build needs isn't installed here
+        texts.append(re.sub(r"(?ms)^\[build-system\].*?(?=^\[|\Z)", "", py.read_text(encoding="utf-8", errors="replace")))
+    declared = "\n".join(texts).lower()
+    return {t for t in VENV_TOOLS if not re.search(rf"(?m)(^\s*|[\"']){t}(?![\w.-])", declared)}
 
 
 def python_deps(root: Path, found: dict, checks: list) -> None:
@@ -117,17 +136,26 @@ def python_deps(root: Path, found: dict, checks: list) -> None:
         checks += [{"name": n, "status": "SKIPPED", "detail": "no project virtualenv (.venv or venv)"}
                    for n in ("pip list --outdated", "pip-audit")]
         return
-    # --not-required: what nothing else installed depends on, i.e. what the project asked for
-    res, top = call([*py, "-m", "pip", "list", "--not-required", "--format=json"], root)
+    tools = venv_tools(root)
+    # --not-required: what nothing else installed depends on, i.e. what the project asked for. --exclude-editable:
+    # the project installed into its own virtualenv (pip install -e ., uv sync) would otherwise "require" all of it
+    res, top = call([*py, "-m", "pip", "list", "--not-required", "--exclude-editable", "--format=json"], root)
     res2, data = call([*py, "-m", "pip", "list", "--outdated", "--format=json"], root)
+    res3, current = call([*py, "-m", "pip", "list", "--uptodate", "--format=json"], root)
     direct = None
-    if res.returncode or not isinstance(top, list):
-        checks.append(failed("pip list --outdated", res))
-    elif res2.returncode or not isinstance(data, list):
-        checks.append(failed("pip list --outdated", res2))
+    bad = next((r for r, d in ((res, top), (res2, data), (res3, current)) if r.returncode or not isinstance(d, list)), None)
+    if bad:
+        checks.append(failed("pip list --outdated", bad))
     else:
-        checks.append({"name": "pip list --outdated", "status": "PASS"})
-        direct = {canon(e["name"]) for e in top} - VENV_TOOLS
+        direct = {canon(e["name"]) for e in top} - tools
+        # pip leaves out what it couldn't look up (an unreachable index), so it must be in one list or the other
+        unchecked = sorted(direct - {canon(e["name"]) for e in data + current})
+        if unchecked:
+            checks.append({"name": "pip list --outdated", "status": "FAIL",
+                           "detail": "pip couldn't find the latest version of " + ", ".join(unchecked) +
+                                     " (is the package index reachable?)"})
+        else:
+            checks.append({"name": "pip list --outdated", "status": "PASS"})
         for e in data:
             if canon(e["name"]) in direct:
                 found[("python", canon(e["name"]))] = {"ecosystem": "python", "name": e["name"], "current": e["version"],
@@ -147,13 +175,14 @@ def python_deps(root: Path, found: dict, checks: list) -> None:
     if res.returncode not in (0, 1) or not isinstance(data, dict) or not isinstance(data.get("dependencies"), list):
         checks.append(failed("pip-audit", res))
         return
-    if not data["dependencies"] and top:
-        checks.append({"name": "pip-audit", "status": "FAIL", "detail": f"pip-audit found no packages in {site}"})
+    skipped = sorted(e["name"] for e in data["dependencies"] if e.get("skip_reason"))
+    if len(skipped) == len(data["dependencies"]) and top:
+        checks.append({"name": "pip-audit", "status": "FAIL", "detail": f"pip-audit audited no packages in {site}"})
         return
-    checks.append({"name": "pip-audit", "status": "PASS"})
+    checks.append({"name": "pip-audit", "status": "PASS", **({"detail": "skipped " + ", ".join(skipped)} if skipped else {})})
     for e in data["dependencies"]:
         n = canon(e["name"])
-        if e.get("vulns") and n not in VENV_TOOLS:
+        if e.get("vulns") and n not in tools:
             d = found.setdefault(("python", n), {"ecosystem": "python", "name": e["name"], "current": e.get("version")})
             d.update(vulnerable=True, advisories=sorted({v["id"] for v in e["vulns"]}),
                      fix=sorted({f for v in e["vulns"] for f in v.get("fix_versions", [])}, key=version_key),
