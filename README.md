@@ -31,7 +31,7 @@ You need the [GitHub CLI](https://cli.github.com) (`gh auth login`), git, and Py
 /build-phase 1 → /ship → …
 /release → /deploy
 ```
-Also: `/fix <bug>` · `/research <question>` · `/handoff` (the next session picks up where you left off).
+Also: `/fix <bug>` · `/deps` (update one outdated or vulnerable dependency, then `/ship`) · `/research <question>` · `/handoff` (the next session picks up where you left off).
 
 ## How it works
 
@@ -92,6 +92,7 @@ Rounded boxes are AI, hexagons are code, and the slanted box is you. Each step b
 | `secret_scan.py` | is anything sensitive about to be committed |
 | `merge_gate.py` | may this PR merge, and merges it |
 | `next_version.py` | what the next version is |
+| `deps.py` | which dependencies are outdated or vulnerable (npm, Python) |
 
 See [examples/HOW_IT_WORKS.md](examples/HOW_IT_WORKS.md) and [examples/PLAN.md](examples/PLAN.md) for what the two planning docs look like.
 

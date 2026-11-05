@@ -48,10 +48,13 @@ def run(cmd: list[str] | str, timeout: int = 900, cwd: str | None = None,
         raise GateError(f"command not found: {e.filename}") from e
 
 
-def gh(*args: str) -> subprocess.CompletedProcess:
+def split_command(cmd: str) -> list[str]:
     # posix=False keeps Windows backslashes in paths; it leaves the quotes on, so strip them
-    prog = shlex.split(GH) if os.name != "nt" else [p.strip('"') for p in shlex.split(GH, posix=False)]
-    return run([*prog, *args], timeout=120)
+    return shlex.split(cmd) if os.name != "nt" else [p.strip('"') for p in shlex.split(cmd, posix=False)]
+
+
+def gh(*args: str) -> subprocess.CompletedProcess:
+    return run([*split_command(GH), *args], timeout=120)
 
 
 def gh_json(*args: str) -> Any:
