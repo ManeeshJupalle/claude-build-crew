@@ -36,7 +36,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: shellcheck
-        run: shellcheck install.sh uninstall.sh run.sh hooks/session_start.sh
+        run: shellcheck install.sh uninstall.sh run.sh hooks/session_start.sh evals/*/scaffold.sh
 
   plugin:
     runs-on: ubuntu-latest
