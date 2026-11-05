@@ -19,7 +19,7 @@ A phase is NOT a spec. The builder reads the code and HOW_IT_WORKS.md for detail
 7. Tests ship in the same phase as the code they test.
 8. Keep each phase ≤ 15 lines. If it's longer, you're writing the code in English.
 9. If PLAN.md exists, keep `[x]` phases untouched and re-plan only the rest.
-10. **Skills are optional advice for the builder.** Name a skill only if it's in the list of installed skills you were given and it clearly fits the phase's work (say, test-first for logic, a framework's skill for its code). At most 3 per phase. If you got no list or nothing fits, leave the line out. A skill never replaces a Done-when command.
+10. **Skills are optional advice for the builder.** Name a skill only if it's in the list of installed skills you were given, it guides how code is written (say, test-first for logic, a framework's conventions) rather than doing something like committing, deploying or scheduling, and it clearly fits the phase's work. Never name a build-crew command. At most 3 per phase. If you got no list or nothing fits, leave the line out. A skill never replaces a Done-when command.
 
 ## Shape (`phase_gate.py` parses this exactly. Keep the markers.)
 ```
