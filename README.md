@@ -44,13 +44,13 @@ flowchart LR
 Rounded boxes are AI, hexagons are code, and the slanted box is you. Each step below has the same label and a way to verify it yourself. Gate paths are relative to the plugin folder. On Windows, type `python` instead of `python3`.
 
 1. **Plan:** `AI`
-   `architect` writes `docs/HOW_IT_WORKS.md` (≤ 150 lines: picture, steps, decisions, non-goals). `planner` writes `docs/PLAN.md`: small phases, each ending in runnable *Done when* commands.
+   `architect` writes `docs/HOW_IT_WORKS.md` (≤ 150 lines: picture, steps, decisions, non-goals). `planner` writes `docs/PLAN.md`: small phases, each ending in runnable *Done when* commands, and naming any installed skills that fit the work.
    Verify: read both files. They're meant for you.
 2. **May this phase start?** `Code`
    `phase_gate.py check` refuses if a dependency isn't done or the working tree is dirty.
    Verify: `python3 gates/phase_gate.py check 1`
 3. **Build:** `AI`
-   Claude builds the phase, following the existing code as the spec.
+   Claude builds the phase, following the existing code as the spec and loading the skills the phase names. Skills are advice. The gates still decide.
 4. **Is it done?** `Code`
    `phase_gate.py done` runs the phase's Done-when commands and ticks the box only if they all pass.
    Verify: `python3 gates/phase_gate.py verify 1`

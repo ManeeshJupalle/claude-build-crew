@@ -46,7 +46,22 @@ def test_next(repo):
 
 def test_check_ok(repo):
     code, out = run_gate("phase_gate.py", "check", "1", cwd=repo, env=setup(repo))
-    assert code == 0 and out["done_when"] == ["test -f marker.txt", "true"]
+    assert code == 0 and out["done_when"] == ["test -f marker.txt", "true"] and out["skills"] == []
+
+
+@pytest.mark.parametrize("line,expected", [
+    ("**Skills:** `tdd`, `frontend-design:frontend-design`", ["tdd", "frontend-design:frontend-design"]),
+    ("**Skills:** none", []),
+    ("**Skills:**\n**Notes:** see `db/README.md`", []),  # an empty line doesn't borrow the next line's
+])
+def test_check_lists_the_phases_skills(repo, line, expected):
+    plan = PLAN.replace("**Work in:** `src/db`\n", f"**Work in:** `src/db`\n{line}\n")
+    (repo / "docs").mkdir()
+    (repo / "docs" / "PLAN.md").write_text(plan, encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "docs: plan")
+    code, out = run_gate("phase_gate.py", "check", "1", cwd=repo, env={"CLAUDE_PROJECT_DIR": str(repo)})
+    assert code == 0 and out["skills"] == expected and out["done_when"] == ["test -f marker.txt", "true"]
 
 
 def test_check_blocks_unmet_dependency(repo):
@@ -105,6 +120,10 @@ def test_example_plan_parses(repo):
     code, out = run_gate("phase_gate.py", "check", "2", cwd=repo, env=env)
     assert code == 1 and "Phase 1" in out["error"]
     assert run_gate("phase_gate.py", "check", "0", cwd=repo, env=env)[1]["done_when"] == ["npm run lint", "npm test"]
+    plan = repo / "docs" / "PLAN.md"
+    plan.write_text(plan.read_text(encoding="utf-8").replace("- [ ] Phase 0", "- [x] Phase 0"), encoding="utf-8")
+    git(repo, "commit", "-q", "-am", "docs: phase 0 done")
+    assert run_gate("phase_gate.py", "check", "1", cwd=repo, env=env)[1]["skills"] == ["tdd"]
 
 
 def test_missing_plan(repo):
