@@ -11,19 +11,24 @@
 - `evals/`: a `claude plugin eval` suite that runs the same git tasks with and without build-crew, and grades what happened in the repo, not what the agent said. It runs on macOS or Linux. (#43)
 
 ### Changed
-- `git config` reads of `core.hooksPath`, an alias or an include must end with the key, with nothing after it, not even a redirect. The guard can't tell `2>/dev/null` from a quoted value, and `git config core.hooksPath '2>/dev/null'` sets the path. (#44)
+- The guard refuses some commands it allowed before, because it can't check them: (#44)
+  - A `git config` read of `core.hooksPath`, an alias or an include must end with the key. Only scope flags and `--get`, `--get-all` or `get` can come before it, and nothing can come after it, not even a redirect.
+    - So `git config --type=path --get core.hooksPath`, `git config --get-regexp alias.` and `git config core.hooksPath 2>/dev/null` are refused.
+    - The guard can't tell `2>/dev/null` from a quoted value, and `git config core.hooksPath '2>/dev/null'` sets the path.
+  - A git subcommand that isn't a plain word, such as `git $c` or `git "$sub"`, is refused.
 
 ### Security
 - The guard catches more ways past it: (#44, #46)
   - a git option whose value hid the real command: `git --config-env user.name=V push --force`, also with `--attr-source` or `--shallow-file`
-  - abbreviated long options, which git accepts: `commit --no-verif`, `push --mir`, `push --del`, `reset --har`, `clean --forc`, `add --al`, `config --ren`
-  - deleting or overwriting remote branches: `git push origin :branch`, `--prune`, `--branches`, `refs/heads/*` refspecs
+  - a variable as the subcommand: `S=push; git $S --force origin feat/x`
+  - abbreviated long options, which git accepts: `commit --no-verif`, `push --mir`, `push --del`, `reset --har`, `clean --forc`, `add --al`
+  - deleting remote branches or pushing all of them: `git push origin :branch`, `--prune`, `--branches`, and any refspec with `*`
   - turning hooks off or hiding commands through git config:
     - `git config core.hooksPath …`, including `core.hooksPath get` and `core.hooksPath --local`, which set the path to that word
     - removing the core section
     - `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>`, `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM`, in any case
-    - aliases, as in `git -c alias.p='push --force' p`
-    - config includes
+    - defining aliases (`git -c alias.p='push --force' p`, `git config alias.…`) or renaming a section to alias (`--rename-section`, also abbreviated as `--ren`)
+    - config includes (`include.path`, `includeIf`), set directly, with `-c`, or by renaming a section
   - `gh api` writes to refs or branch protection:
     - `--method=DELETE`, `-XDELETE`, `-iXDELETE`
     - fields without `-X`, which gh sends as POST
