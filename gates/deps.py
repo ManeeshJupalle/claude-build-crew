@@ -110,7 +110,8 @@ def npm_fix(name: str, fa) -> dict:
     if isinstance(fa, dict):
         if fa.get("name") == name:
             return {"fix": [fa.get("version")]}
-        return {"fix": [], "fix_via": f"{fa.get('name')}@{fa.get('version')}"}
+        return {"fix": [], "fix_via": f"{fa.get('name')}@{fa.get('version')}",
+                **({"fix_major": True} if fa.get("isSemVerMajor") else {})}
     return {"fix": [], **({"fix_via": "npm audit fix"} if fa else {})}
 
 

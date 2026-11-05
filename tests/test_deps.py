@@ -82,11 +82,13 @@ def test_vulnerability_fails_and_comes_first(tmp_path):
 def test_npm_fix_is_a_list_like_python(tmp_path):
     vulns = {"minimist": {"isDirect": True, "fixAvailable": {"name": "minimist", "version": "1.2.8", "isSemVerMajor": True}},
              "qs": {"isDirect": False, "fixAvailable": {"name": "express", "version": "4.21.0", "isSemVerMajor": False}},
-             "old": {"isDirect": True, "fixAvailable": False}}
+             "old": {"isDirect": True, "fixAvailable": False},
+             "cookie": {"isDirect": False, "fixAvailable": {"name": "express", "version": "5.0.0", "isSemVerMajor": True}}}
     code, out = gate(tmp_path, NPM, {"outdated": {"stdout": ""}, "audit": {"stdout": {"vulnerabilities": vulns}, "code": 1}})
     deps = by_name(out)
     assert deps["minimist"]["fix"] == ["1.2.8"] and "fix_via" not in deps["minimist"]
     assert deps["qs"]["fix"] == [] and deps["qs"]["fix_via"] == "express@4.21.0" and deps["qs"]["direct"] is False
+    assert "fix_major" not in deps["qs"] and deps["cookie"]["fix_major"] is True  # the fix is express 5: breaking
     assert deps["old"]["fix"] == [] and "fix_via" not in deps["old"]
 
 
