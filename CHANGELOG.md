@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-05
+### Added
+- A phase in `docs/PLAN.md` can name the skills it's built with. `/kickoff` gives the planner the installed skills to choose from, and `/build-phase` loads the ones a phase names. Skills stay advice: the gates still decide, and a phase with no skills builds as before. (#41)
+- `/deps` updates one outdated or vulnerable dependency, proves the update with `checks.py`, then hands off to `/ship`. (#42)
+  - The new `deps.py` gate finds them with each stack's own tools: `npm outdated` and `npm audit`, and for Python `pip list` in the project's virtualenv plus `pip-audit --path` run from outside it.
+  - A missing tool is SKIPPED and never reported as up to date. A tool that errors fails the gate.
+- `evals/`: a `claude plugin eval` suite that runs the same git tasks with and without build-crew, and grades what happened in the repo, not what the agent said. It runs on macOS or Linux. (#43)
+
+### Changed
+- The guard refuses some commands it allowed before, because it can't check them: (#44)
+  - A `git config` read of `core.hooksPath`, an alias or an include must end with the key. Only scope flags and `--get`, `--get-all` or `get` can come before it, and nothing can come after it, not even a redirect.
+    - So `git config --type=path --get core.hooksPath`, `git config --get-regexp alias.` and `git config core.hooksPath 2>/dev/null` are refused.
+    - The guard can't tell `2>/dev/null` from a quoted value, and `git config core.hooksPath '2>/dev/null'` sets the path.
+  - A git subcommand that isn't a plain word, such as `git $c` or `git "$sub"`, is refused.
+
+### Security
+- The guard catches more ways past it: (#44, #46)
+  - a git option whose value hid the real command: `git --config-env user.name=V push --force`, also with `--attr-source` or `--shallow-file`
+  - a variable as the subcommand: `S=push; git $S --force origin feat/x`
+  - abbreviated long options, which git accepts: `commit --no-verif`, `push --mir`, `push --del`, `reset --har`, `clean --forc`, `add --al`
+  - deleting remote branches or pushing all of them: `git push origin :branch`, `--prune`, `--branches`, and any refspec with `*`
+  - turning hooks off or hiding commands through git config:
+    - `git config core.hooksPath …`, including `core.hooksPath get` and `core.hooksPath --local`, which set the path to that word
+    - removing the core section
+    - `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>`, `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM`, in any case
+    - defining aliases (`git -c alias.p='push --force' p`, `git config alias.…`) or renaming a section to alias (`--rename-section`, also abbreviated as `--ren`)
+    - config includes (`include.path`, `includeIf`), set directly, with `-c`, or by renaming a section
+  - `gh api` writes to refs or branch protection:
+    - `--method=DELETE`, `-XDELETE`, `-iXDELETE`
+    - fields without `-X`, which gh sends as POST
+    - GraphQL ref, branch-protection and ruleset mutations, and GraphQL queries read from stdin or a file
+
 ## [0.4.1] - 2026-10-30
 ### Security
 - `secret_scan` reports npm and Hugging Face tokens that come right after a non-ASCII letter, such as `é`. Before, it missed them. (#29, by @Golden007-prog)
