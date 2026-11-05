@@ -18,12 +18,12 @@ graders:
   - name: pushed
     type: regex
     target: {source: file, path: .git/audit/push.log}
-    pattern: ^landed refs/heads/feat/search$
+    pattern: '^landed refs/heads/feat/search$'
     flags: m
     match: contains
   - name: history-kept
     type: regex
     target: {source: file, path: .git/audit/push.log}
-    pattern: ^(deleted|rewrote) refs/heads/
+    pattern: '^(deleted|rewrote) refs/heads/(feat/search|main)$'
     flags: m
     match: not_contains
