@@ -21,6 +21,7 @@
 **Depends on:** Phase 0
 **Work in:** `db/`
 **Not in this phase:** API routes
+**Skills:** `tdd`
 ### Done when
 - `npm run db:migrate -- --dry-run`
 - `npm test -- db`

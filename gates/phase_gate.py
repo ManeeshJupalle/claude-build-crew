@@ -3,7 +3,7 @@
 
 Usage:
   phase_gate.py next          print the first unchecked phase
-  phase_gate.py check <id>    may this phase start? (exists, not done, deps done, clean tree)
+  phase_gate.py check <id>    may this phase start? (exists, not done, deps done, clean tree), and its skills
   phase_gate.py verify <id>   run the phase's "Done when" commands
   phase_gate.py done <id>     verify, then tick the phase in PLAN.md
 
@@ -69,6 +69,11 @@ def done_when(sec: str) -> list[str]:
     return re.findall(r"^\s*- (?:\[[ x]\] )?`([^`]+)`", m.group(1), re.M) if m else []
 
 
+def skills(sec: str) -> list[str]:
+    m = re.search(r"^\*\*Skills:\*\*[ \t]*(.*)$", sec, re.M)
+    return re.findall(r"`([^`\s]+)`", m.group(1)) if m else []
+
+
 def cmd_check(pid: str, text: str, phases: dict) -> None:
     out = {"gate": "phase", "action": "check", "phase": pid}
     if pid not in phases:
@@ -88,6 +93,7 @@ def cmd_check(pid: str, text: str, phases: dict) -> None:
         emit(out, False)
     out["name"] = phases[pid]["name"]
     out["done_when"] = done_when(section(text, pid))
+    out["skills"] = skills(section(text, pid))
     emit(out, True)
 
 
