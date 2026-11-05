@@ -26,7 +26,23 @@ BLOCKED = [
     "git push origin release/1.2",
     "git push --all",
     "git push origin --delete feat/old",
+    "git push origin :feat/old",                       # an empty source deletes the remote branch
+    "git push origin :refs/heads/feat/old",
+    "git push origin feat/x :feat/old",
+    "git --config-env core.hooksPath=V push --force",  # a value that isn't the subcommand
+    "git --config-env=core.hooksPath=V commit -m x",
+    "git --config-env CORE.HOOKSPATH=V commit -m x",
+    "git --config-env user.name=V push --force",
     # skipping hooks
+    "git config core.hooksPath /dev/null",
+    "git config --local core.hooksPath .nohooks",
+    "git config --file .git/config core.hooksPath x",
+    "git config set core.hooksPath x",
+    "git config --unset core.hooksPath",
+    "git config CORE.HOOKSPATH x",
+    "GIT_CONFIG_PARAMETERS=\"'core.hooksPath=/dev/null'\" git commit -m x",
+    "export GIT_CONFIG_PARAMETERS=\"'core.hooksPath=x'\"",
+    "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=x git commit -m x",
     "git commit -m x --no-verify",
     "git commit -n -m x",
     "git commit -anm x",
@@ -189,6 +205,13 @@ UNPARSEABLE = ["echo $(git status"]
 
 ALLOWED = [
     "git push -u origin feat/resume-export",
+    "git push origin feat/x:feat/y",
+    "git config core.hooksPath",                       # reading it is fine
+    "git config --get core.hooksPath",
+    "git config get core.hooksPath",
+    "git config user.name 'Sam Dev'",
+    "git --config-env user.name=GIT_NAME commit -m x",
+    "echo GIT_CONFIG_PARAMETERS",
     "git push",
     "git push origin feat/x",
     "git push -u origin feat/x && gh pr create --base main --title 'feat: x'",
@@ -284,6 +307,9 @@ PS_BLOCKED = [
     "Write-Output @\"\n$(git reset --hard)\n\"@",
     # skipping hooks
     "$env:HUSKY=0",
+    "$env:GIT_CONFIG_PARAMETERS = \"'core.hooksPath=x'\"; git commit -m x",
+    "git push origin :feat/old",
+    "git config core.hooksPath .nohooks",
     "$env:HUSKY = '0'; git commit -m x",
     "$Env:husky=0",
     "$env:SKIP = 'lint'",

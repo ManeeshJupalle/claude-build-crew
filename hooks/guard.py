@@ -26,7 +26,8 @@ SEPARATORS = {"&&", "||", ";", "|", "&", "\n", "|&", ";;"}
 WRAPPERS = {"sudo", "command", "exec", "time", "nice", "ionice", "nohup", "env", "xargs", "timeout",
             "stdbuf", "caffeinate", "chronic"}
 WRAPPER_VALUE_FLAGS = {"-u", "-g", "-n", "-s", "-k", "-c", "-p", "-o", "-e", "-i", "--signal", "--kill-after", "--user"}
-HOOK_SKIP_ENV = re.compile(r"^(HUSKY=0|HUSKY_SKIP_HOOKS=|HUSKY_SKIP_INSTALL=|SKIP=|PRE_COMMIT_ALLOW_NO_CONFIG=|GIT_HOOKS_PATH=)")
+HOOK_SKIP_ENV = re.compile(r"^(HUSKY=0|HUSKY_SKIP_HOOKS=|HUSKY_SKIP_INSTALL=|SKIP=|PRE_COMMIT_ALLOW_NO_CONFIG=|GIT_HOOKS_PATH="
+                           r"|GIT_CONFIG_PARAMETERS=|GIT_CONFIG_COUNT=|GIT_CONFIG_KEY_\d+=)")  # git config from the environment
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "mksh", "ash", "fish", "csh", "tcsh"}
 KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "export"}  # what follows is a command
 PLACEHOLDERS = {c: chr(0xE000 + n) for n, c in enumerate(";&|\n(){}#<")}  # stand-ins for quoted separators
@@ -285,10 +286,11 @@ def check_git(args: list[str], state: dict) -> str | None:
     # global options before the subcommand
     i = 0
     while i < len(args) and args[i].startswith("-"):
-        opt = args[i]
-        if opt in ("-C", "-c", "--git-dir", "--work-tree", "--namespace"):
-            if opt == "-c" and i + 1 < len(args) and args[i + 1].lower().startswith("core.hookspath"):
-                return "Overriding core.hooksPath skips git hooks; forbidden."
+        opt, value = args[i].split("=", 1) if args[i].startswith("--config-env=") else (args[i], None)
+        if opt in ("-c", "--config-env") and (value or (args[i + 1] if i + 1 < len(args) else "")).lower().startswith(
+                "core.hookspath"):
+            return "Overriding core.hooksPath skips git hooks; forbidden."
+        if opt in ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env") and value is None:
             i += 2
             continue
         i += 1
@@ -310,10 +312,19 @@ def check_git(args: list[str], state: dict) -> str | None:
         for r in refspecs:
             if r.startswith("+"):
                 return "Force push (+refspec) is forbidden."
+            if r.startswith(":"):
+                return f"git push {r} deletes a remote branch; forbidden. Push one feature branch."
             if is_protected_ref(r, branch):
                 return "Pushing to a protected branch is forbidden. Open a PR."
         if not refspecs and PROTECTED.match(branch or "x"):
             return f"You are on protected branch '{branch}'. Create a feature branch first."
+        return None
+
+    if sub == "config":  # reading core.hooksPath is fine; setting or unsetting it changes which hooks run
+        keys = [k for k, a in enumerate(rest) if a.lower() == "core.hookspath"]
+        if keys and not {"--get", "--get-all", "--get-regexp", "get"} & set(rest) and (
+                keys[0] + 1 < len(rest) or {"--unset", "--unset-all", "--add", "--replace-all", "set", "unset"} & set(rest)):
+            return "Changing core.hooksPath skips git hooks; forbidden."
         return None
 
     if sub == "commit":
