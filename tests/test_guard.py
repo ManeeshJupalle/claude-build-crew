@@ -58,6 +58,12 @@ BLOCKED = [
     "gh api graphql -F query=@-",
     "gh api graphql -F query=@query.graphql",
     "gh api graphql --field=query=@query.graphql",
+    "echo '{\"query\":\"mutation { deleteRef }\"}' | gh api https://api.github.com/graphql --input -",
+    "gh api /graphql --input -",
+    "gh api graphql -iFquery=@-",
+    "git config --rename-section foo includeIf",       # a section, not a key: main allows it
+    "GIT_CONFIG_GLOBAL=/tmp/x.gitconfig git p",        # another config file, like include.path
+    "git_config_system=/tmp/x.gitconfig git status",
     "git config include.path /tmp/x.gitconfig",        # an included file can set hooksPath or aliases
     "git config includeIf.onbranch:feat/x.path /tmp/x.gitconfig",
     "git config core.hooksPath '2>/dev/null'",         # the guard can't tell a quoted value from a redirect
@@ -287,6 +293,7 @@ ALLOWED = [
     "git config --get include.path",
     "git config --rename-section foo bar",
     "gh api repos/o/r/issues --input body.json",
+    "gh api https://api.github.com/graphql -f query='query { viewer { login } }'",
     "gh api graphql -f query='{ repository(owner: \"o\", name: \"r\") { rulesets(first: 5) { totalCount } } }'",
     "git config --get-regexp alias",
     "git config --get alias.st",

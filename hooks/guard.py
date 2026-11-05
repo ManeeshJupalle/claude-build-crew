@@ -29,7 +29,7 @@ WRAPPER_VALUE_FLAGS = {"-u", "-g", "-n", "-s", "-k", "-c", "-p", "-o", "-e", "-i
 # git config from the environment, in any case: Windows names ignore case, so git_config_parameters works there.
 # Not HUSKY or SKIP: lowercase skip=1 is an everyday shell variable.
 HOOK_SKIP_ENV = re.compile(r"^(HUSKY=0|HUSKY_SKIP_HOOKS=|HUSKY_SKIP_INSTALL=|SKIP=|PRE_COMMIT_ALLOW_NO_CONFIG=|GIT_HOOKS_PATH="
-                           r"|(?i:GIT_CONFIG_PARAMETERS=|GIT_CONFIG_COUNT=|GIT_CONFIG_KEY_\d+=))")
+                           r"|(?i:GIT_CONFIG_PARAMETERS=|GIT_CONFIG_COUNT=|GIT_CONFIG_KEY_\d+=|GIT_CONFIG_GLOBAL=|GIT_CONFIG_SYSTEM=))")
 # git's global options that take the next word as their value
 GIT_VALUE_OPTIONS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--attr-source",
                      "--shallow-file", "--super-prefix"}
@@ -471,10 +471,11 @@ def check_gh(args: list[str]) -> str | None:
                      joined):
             return "Changing branches, refs or protection rules through the API is forbidden."
         # a GraphQL query read from stdin or a file (--input, query=@-, query=@file) can't be checked for mutations
-        if gh_api_endpoint(args) == "graphql" and any(a == "--input" or a.startswith("--input=") or
-                                                      re.match(r"(-[fF]|--(raw-)?field=?)?\w*=@", a) for a in args):
+        graphql = re.fullmatch(r"(https?://[^/]+(/api)?)?/?graphql", gh_api_endpoint(args)) is not None
+        if graphql and any(a == "--input" or a.startswith("--input=") or
+                           re.match(r"(-i*[fF]|--(raw-)?field=?)?\w*=@", a) for a in args):
             return "A GraphQL query read from stdin or a file can't be verified; pass it with -f query='…'."
-        if (gh_api_endpoint(args) != "graphql" and gh_api_method(args) != "GET"  # GraphQL is always POST: its mutations count
+        if (not graphql and gh_api_method(args) != "GET"  # GraphQL is always POST: its mutations count
                 and re.search(r"(branches|protection|rulesets|git/refs)", joined)):
             return "Changing branches, refs or protection rules through the API is forbidden."
     return None
