@@ -26,7 +26,17 @@ SEPARATORS = {"&&", "||", ";", "|", "&", "\n", "|&", ";;"}
 WRAPPERS = {"sudo", "command", "exec", "time", "nice", "ionice", "nohup", "env", "xargs", "timeout",
             "stdbuf", "caffeinate", "chronic"}
 WRAPPER_VALUE_FLAGS = {"-u", "-g", "-n", "-s", "-k", "-c", "-p", "-o", "-e", "-i", "--signal", "--kill-after", "--user"}
-HOOK_SKIP_ENV = re.compile(r"^(HUSKY=0|HUSKY_SKIP_HOOKS=|HUSKY_SKIP_INSTALL=|SKIP=|PRE_COMMIT_ALLOW_NO_CONFIG=|GIT_HOOKS_PATH=)")
+# git config from the environment, in any case: Windows names ignore case, so git_config_parameters works there.
+# Not HUSKY or SKIP: lowercase skip=1 is an everyday shell variable.
+HOOK_SKIP_ENV = re.compile(r"^(HUSKY=0|HUSKY_SKIP_HOOKS=|HUSKY_SKIP_INSTALL=|SKIP=|PRE_COMMIT_ALLOW_NO_CONFIG=|GIT_HOOKS_PATH="
+                           r"|(?i:GIT_CONFIG_PARAMETERS=|GIT_CONFIG_COUNT=|GIT_CONFIG_KEY_\d+=))")
+# git's global options that take the next word as their value
+GIT_VALUE_OPTIONS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--attr-source",
+                     "--shallow-file", "--super-prefix"}
+GH_API_VALUE_OPTIONS = {"--method", "--field", "--raw-field", "--header", "--preview", "--jq", "--template", "--input",
+                        "--hostname", "--cache"}
+CONFIG_READ_WORDS = {"--local", "--global", "--system", "--worktree", "--show-origin", "--show-scope", "-z", "--null",
+                     "--get", "--get-all", "get", "--all"}
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "mksh", "ash", "fish", "csh", "tcsh"}
 KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "export"}  # what follows is a command
 PLACEHOLDERS = {c: chr(0xE000 + n) for n, c in enumerate(";&|\n(){}#<")}  # stand-ins for quoted separators
@@ -137,6 +147,12 @@ def prog_name(tok: str) -> str:
 def short_flags(tok: str) -> str:
     """'-fu' -> 'fu'; '--force' -> ''."""
     return tok[1:] if tok.startswith("-") and not tok.startswith("--") and len(tok) > 1 else ""
+
+
+def long_opt(tok: str, *names: str) -> bool:
+    """git takes any unique prefix of a long option (--no-verif is --no-verify), so a prefix counts as the option."""
+    tok = tok.split("=", 1)[0]
+    return len(tok) > 2 and tok.startswith("--") and any(n.startswith(tok) for n in names)
 
 
 def closing(cmd: str, i: int) -> int:
@@ -285,42 +301,69 @@ def check_git(args: list[str], state: dict) -> str | None:
     # global options before the subcommand
     i = 0
     while i < len(args) and args[i].startswith("-"):
-        opt = args[i]
-        if opt in ("-C", "-c", "--git-dir", "--work-tree", "--namespace"):
-            if opt == "-c" and i + 1 < len(args) and args[i + 1].lower().startswith("core.hookspath"):
-                return "Overriding core.hooksPath skips git hooks; forbidden."
+        opt, value = args[i].split("=", 1) if args[i].startswith("--config-env=") else (args[i], None)
+        setting = (value or (args[i + 1] if i + 1 < len(args) else "")).lower() if opt in ("-c", "--config-env") else ""
+        if setting.startswith("core.hookspath"):
+            return "Overriding core.hooksPath skips git hooks; forbidden."
+        if setting.startswith("alias."):  # git -c alias.p='push --force' p
+            return "Defining a git alias can hide what a command runs; forbidden."
+        if opt in GIT_VALUE_OPTIONS and value is None:
             i += 2
             continue
         i += 1
     if i >= len(args):
         return None
     sub, rest = args[i], args[i + 1:]
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", sub):  # an option value taken for the subcommand
+        return f"Could not tell which git command this runs ('{sub[:40]}'), so it can't be verified."
 
     if sub == "push":
         positionals = [a for a in rest if not a.startswith("-")]
         for a in rest:
-            if a.startswith("--force") or a == "--mirror" or "f" in short_flags(a):
+            if a.startswith("--force") or long_opt(a, "--force", "--mirror") or "f" in short_flags(a):
                 return "Force push is forbidden."
-            if a == "--no-verify":
+            if long_opt(a, "--no-verify"):
                 return "Skipping git hooks (--no-verify) is forbidden."
-            if a in ("--all", "--delete") or "d" in short_flags(a):
+            if long_opt(a, "--all", "--branches", "--delete", "--prune") or "d" in short_flags(a):
                 return f"git push {a} is forbidden; push one feature branch."
         refspecs = positionals[1:]
         branch = state.get("branch") or current_branch()
         for r in refspecs:
             if r.startswith("+"):
                 return "Force push (+refspec) is forbidden."
+            if r.startswith(":"):
+                return f"git push {r} deletes a remote branch; forbidden. Push one feature branch."
+            if "*" in r:  # refs/heads/*:refs/heads/* pushes main too
+                return f"git push {r} pushes many branches; forbidden. Push one feature branch."
             if is_protected_ref(r, branch):
                 return "Pushing to a protected branch is forbidden. Open a PR."
         if not refspecs and PROTECTED.match(branch or "x"):
             return f"You are on protected branch '{branch}'. Create a feature branch first."
         return None
 
+    if sub == "config":  # reading core.hooksPath or an alias is fine; setting or unsetting one isn't
+        words = [a.lower() for a in rest]
+        key = next((w for w in words if w == "core.hookspath" or w.startswith(("alias.", "include.", "includeif."))),
+                   None)
+        # a read names the key last, with nothing after it: git takes even "--local" or a quoted '2>/dev/null' as the
+        # value to set, and the guard can't tell a quoted word from a redirect, so a read can't carry one
+        if key and not (words[-1] == key and all(w in CONFIG_READ_WORDS for w in words[:-1])):
+            return (f"Changing {key} " + ("skips git hooks" if key == "core.hookspath" else
+                                           "can hide what a command runs" if key.startswith("alias.") else
+                                           "can change hooks or aliases through another file")
+                    + "; forbidden. To read it: git config --get " + key + ", with nothing after it.")
+        section = [w for w in words if w in ("remove-section", "rename-section")
+                   or long_opt(w, "--remove-section", "--rename-section")]
+        # dropping core drops core.hooksPath; renaming a section to alias makes its keys aliases
+        if section and ("core" in words or "alias" in words and any("rename" in w for w in section)):
+            return "Removing or renaming git's core section, or renaming one to alias, changes hooks or aliases; forbidden."
+        return None
+
     if sub == "commit":
         j = 0
         while j < len(rest):
             a = rest[j]
-            if a == "--no-verify":
+            if long_opt(a, "--no-verify"):
                 return "Skipping git hooks (--no-verify) is forbidden."
             if a in ("-m", "-F", "-C", "-c", "-t", "--message", "--file", "--author", "--date",
                      "--template", "--fixup", "--squash", "--reuse-message", "--reedit-message"):
@@ -357,20 +400,57 @@ def check_git(args: list[str], state: dict) -> str | None:
             return f"git {sub} on protected branch '{branch}' is forbidden. Do it on a feature branch and open a PR."
         return None
 
-    if sub == "reset" and "--hard" in rest:
+    if sub == "reset" and any(long_opt(a, "--hard") for a in rest):
         return "git reset --hard discards work; forbidden."
-    if sub == "clean" and any(a == "--force" or "f" in short_flags(a) for a in rest):
+    if sub == "clean" and any(long_opt(a, "--force") or "f" in short_flags(a) for a in rest):
         return "git clean -f deletes files; forbidden."
     if sub == "restore" and ("." in rest or ":/" in rest):
         staged_only = any(a in ("--staged", "-S") for a in rest) and not any(a in ("--worktree", "-W") for a in rest)
         if not staged_only:
             return "Discarding all working-tree changes is forbidden (unstaging with --staged is fine)."
-    if sub == "branch" and any(a in ("-d", "-D", "--delete") for a in rest):
+    if sub == "branch" and any(a in ("-d", "-D") or long_opt(a, "--delete") for a in rest):
         if any(PROTECTED.match(a) for a in rest if not a.startswith("-")):
             return "Deleting a protected branch is forbidden."
-    if sub == "add" and any(a in ("-A", "--all", ".", ":/", "-u", "--update") for a in rest):
+    if sub == "add" and any(a in ("-A", ".", ":/", "-u") or long_opt(a, "--all", "--update") for a in rest):
         return "Stage files by explicit path, not 'git add -A' / 'git add .'."
     return None
+
+
+def gh_api_method(args: list[str]) -> str:
+    """The HTTP method gh api sends: -X/--method (also -XDELETE, -iXDELETE, --method=DELETE), else POST when there
+    are fields or input (-f, -F, also -fname=x), else GET."""
+    method, fields = None, False
+    for k, a in enumerate(args):
+        if a in ("--method", "-X") and k + 1 < len(args):
+            method = args[k + 1]
+        elif a.startswith("--method="):
+            method = a.split("=", 1)[1]
+        elif a in ("--field", "--raw-field", "--input") or a.startswith(("--field=", "--raw-field=", "--input=")):
+            fields = True
+        elif a.startswith("-") and not a.startswith("--"):
+            for n, c in enumerate(a[1:], 1):  # a cluster: -i takes no value; the first flag that does ends it
+                if c == "X":
+                    method = a[n + 1:].lstrip("=") or (args[k + 1] if k + 1 < len(args) else "")
+                elif c in "fF":
+                    fields = True
+                if c != "i":
+                    break
+    return (method or ("POST" if fields else "GET")).upper()
+
+
+def gh_api_endpoint(args: list[str]) -> str:
+    """The first word after `gh api` that isn't an option or an option's value: the path, or graphql."""
+    k = 1
+    while k < len(args):
+        a = args[k]
+        if a.startswith("--"):
+            k += 2 if "=" not in a and a in GH_API_VALUE_OPTIONS else 1
+        elif a.startswith("-") and len(a) > 1:
+            short = next((n for n, c in enumerate(a[1:], 1) if c != "i"), None)  # -i takes no value
+            k += 2 if short is not None and short == len(a) - 1 and a[short] in "XfFHpqt" else 1
+        else:
+            return a
+    return ""
 
 
 def check_gh(args: list[str]) -> str | None:
@@ -383,8 +463,11 @@ def check_gh(args: list[str]) -> str | None:
         if (re.search(r"pulls/\d+/merge\b", joined) or re.search(r"/merges\b", joined)
                 or re.search(r"(mergePullRequest|enablePullRequestAutoMerge|mergeBranch)", joined)):
             return "Merging through the API is forbidden: use gates/merge_gate.py."
-        method = next((args[k + 1].upper() for k, a in enumerate(args[:-1]) if a in ("-X", "--method")), "GET")
-        if method != "GET" and re.search(r"(branches|protection|rulesets|git/refs)", joined):
+        if re.search(r"\b(createRef|updateRefs?|deleteRef|(create|update|delete)(BranchProtectionRule|RepositoryRuleset))\b",
+                     joined):
+            return "Changing branches, refs or protection rules through the API is forbidden."
+        if (gh_api_endpoint(args) != "graphql" and gh_api_method(args) != "GET"  # GraphQL is always POST: its mutations count
+                and re.search(r"(branches|protection|rulesets|git/refs)", joined)):
             return "Changing branches, refs or protection rules through the API is forbidden."
     return None
 
