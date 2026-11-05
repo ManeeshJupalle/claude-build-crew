@@ -18,5 +18,5 @@ Don't write application code in this command.
    If a stack choice is genuinely unclear, offer once: "Want me to research <choice> first?" Only on a yes, run the `build-crew:researcher` subagent and pass its `DECISION_ROW` to the architect.
 3. **Brief.** Combine everything into ≤ 20 bullets and show it in one short message.
 4. Run the `build-crew:architect` subagent with the brief. If it returns STOPPED, ask its questions and re-run it once.
-5. Run the `build-crew:planner` subagent.
+5. Run the `build-crew:planner` subagent. Give it the name and one-line description of each skill installed in this session, so it can name the ones that fit a phase.
 6. **Finish.** Reply with the two file paths, the phase list (one line each), any open questions, and: "Skim HOW_IT_WORKS.md, then run `/build-phase 0`."
