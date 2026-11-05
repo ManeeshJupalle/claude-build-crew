@@ -29,7 +29,7 @@ WRAPPER_VALUE_FLAGS = {"-u", "-g", "-n", "-s", "-k", "-c", "-p", "-o", "-e", "-i
 # git config from the environment, in any case: Windows names ignore case, so git_config_parameters works there.
 # Not HUSKY or SKIP: lowercase skip=1 is an everyday shell variable.
 HOOK_SKIP_ENV = re.compile(r"^(HUSKY=0|HUSKY_SKIP_HOOKS=|HUSKY_SKIP_INSTALL=|SKIP=|PRE_COMMIT_ALLOW_NO_CONFIG=|GIT_HOOKS_PATH="
-                           r"|(?i:GIT_CONFIG_PARAMETERS=|GIT_CONFIG_COUNT=|GIT_CONFIG_KEY_\d+=))")
+                           r"|(?i:GIT_CONFIG_PARAMETERS=|GIT_CONFIG_COUNT=|GIT_CONFIG_KEY_\d+=|GIT_CONFIG_GLOBAL=|GIT_CONFIG_SYSTEM=))")
 # git's global options that take the next word as their value
 GIT_VALUE_OPTIONS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--attr-source",
                      "--shallow-file", "--super-prefix"}
@@ -307,6 +307,8 @@ def check_git(args: list[str], state: dict) -> str | None:
             return "Overriding core.hooksPath skips git hooks; forbidden."
         if setting.startswith("alias."):  # git -c alias.p='push --force' p
             return "Defining a git alias can hide what a command runs; forbidden."
+        if setting.startswith(("include.", "includeif.")):  # the included file can define aliases or hooksPath
+            return "Including another config file can change hooks or aliases; forbidden."
         if opt in GIT_VALUE_OPTIONS and value is None:
             i += 2
             continue
@@ -355,7 +357,9 @@ def check_git(args: list[str], state: dict) -> str | None:
         section = [w for w in words if w in ("remove-section", "rename-section")
                    or long_opt(w, "--remove-section", "--rename-section")]
         # dropping core drops core.hooksPath; renaming a section to alias makes its keys aliases
-        if section and ("core" in words or "alias" in words and any("rename" in w for w in section)):
+        renames = any(w == "rename-section" or long_opt(w, "--rename-section") for w in section)  # also --ren
+        if section and ("core" in words or renames and any(w in ("alias", "include") or w.startswith("includeif")
+                                                           for w in words)):
             return "Removing or renaming git's core section, or renaming one to alias, changes hooks or aliases; forbidden."
         return None
 
@@ -466,7 +470,15 @@ def check_gh(args: list[str]) -> str | None:
         if re.search(r"\b(createRef|updateRefs?|deleteRef|(create|update|delete)(BranchProtectionRule|RepositoryRuleset))\b",
                      joined):
             return "Changing branches, refs or protection rules through the API is forbidden."
-        if (gh_api_endpoint(args) != "graphql" and gh_api_method(args) != "GET"  # GraphQL is always POST: its mutations count
+        # a GraphQL query read from stdin or a file (--input, query=@-, query=@file) can't be checked for mutations
+        endpoint = gh_api_endpoint(args)
+        # refusing is safe, so any endpoint that may reach GraphQL counts (graphql?x=1, /GraphQL, full URLs) ...
+        if re.search(r"graphql", endpoint, re.I) and any(a == "--input" or a.startswith("--input=") or
+                                                         re.match(r"(-i*[fF]|--(raw-)?field=?)?\w*=@", a) for a in args):
+            return "A GraphQL query read from stdin or a file can't be verified; pass it with -f query='…'."
+        # ... but skipping the REST rule isn't, so only an exact GraphQL endpoint does: not .../git/refs/heads/graphql
+        graphql = re.fullmatch(r"(https?://[^/]+(/api)?)?/?graphql", endpoint) is not None
+        if (not graphql and gh_api_method(args) != "GET"  # GraphQL is always POST: its mutations count
                 and re.search(r"(branches|protection|rulesets|git/refs)", joined)):
             return "Changing branches, refs or protection rules through the API is forbidden."
     return None

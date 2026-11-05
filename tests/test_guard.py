@@ -47,6 +47,27 @@ BLOCKED = [
     "gh api -X DELETE repos/o/r/git/refs/heads/feat/x -p graphql",
     "gh api graphql -f query='mutation { deleteRepositoryRuleset(input: {}) { clientMutationId } }'",
     "git config --rename-section foo alias",           # git config foo.p 'push --force' first, then git p
+    "git config --ren foo alias",                      # an abbreviated --rename-section
+    "git config --rena foo alias",
+    "git config --rename-section foo include",
+    "git config --ren foo includeIf.onbranch:feat/x",
+    "git -c include.path=/tmp/x.gitconfig status",     # the included file can define aliases or hooksPath
+    "git -c includeIf.onbranch:feat/x.path=/tmp/x.gitconfig status",
+    "git --config-env include.path=V status",
+    "echo '{\"query\":\"mutation { deleteRef }\"}' | gh api graphql --input -",  # the query can't be read
+    "gh api graphql -F query=@-",
+    "gh api graphql -F query=@query.graphql",
+    "gh api graphql --field=query=@query.graphql",
+    "echo '{\"query\":\"mutation { deleteRef }\"}' | gh api https://api.github.com/graphql --input -",
+    "gh api /graphql --input -",
+    "gh api graphql -iFquery=@-",
+    "gh api 'graphql?x=1' --input -",                  # still reaches GraphQL
+    "gh api 'https://api.github.com/graphql?x=1' --input -",
+    "gh api /GraphQL -F query=@q.graphql",
+    "gh api -X DELETE repos/o/r/git/refs/heads/graphql",  # a branch named graphql is still a ref
+    "git config --rename-section foo includeIf",       # a section, not a key: main allows it
+    "GIT_CONFIG_GLOBAL=/tmp/x.gitconfig git p",        # another config file, like include.path
+    "git_config_system=/tmp/x.gitconfig git status",
     "git config include.path /tmp/x.gitconfig",        # an included file can set hooksPath or aliases
     "git config includeIf.onbranch:feat/x.path /tmp/x.gitconfig",
     "git config core.hooksPath '2>/dev/null'",         # the guard can't tell a quoted value from a redirect
@@ -274,6 +295,9 @@ ALLOWED = [
     "gh api graphql -f query='query { viewer { login } }'",
     "gh api repos/o/r/git/refs/heads/x --jq .object.sha",
     "git config --get include.path",
+    "git config --rename-section foo bar",
+    "gh api repos/o/r/issues --input body.json",
+    "gh api https://api.github.com/graphql -f query='query { viewer { login } }'",
     "gh api graphql -f query='{ repository(owner: \"o\", name: \"r\") { rulesets(first: 5) { totalCount } } }'",
     "git config --get-regexp alias",
     "git config --get alias.st",
