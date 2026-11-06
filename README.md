@@ -106,12 +106,12 @@ See [examples/HOW_IT_WORKS.md](examples/HOW_IT_WORKS.md) and [examples/PLAN.md](
 | | without | 3/3 | 3/3 | 3/3 |
 | Sonnet 5.5 | with | 3/3 | 3/3 | 3/3 |
 | | without | 3/3 | 3/3 | 3/3 |
-| Haiku 5.5 | with | 3/3 | 2/3 | 3/3 |
-| | without | 3/3 | 2/3 | 3/3 |
+| Haiku 5.5 | with | 3/3 | 3/3 | 3/3 |
+| | without | 3/3 | 3/3 | 3/3 |
 
-No difference. With or without build-crew, every model fetched, rebased and pushed normally, and none tried a force-push, so the guard had nothing to stop. Haiku's misses stopped to ask before rebasing. The guard is a seatbelt for the run that does go wrong, and these evals don't cover the gates yet. A case with a failing pre-commit hook was dropped, because `claude plugin eval` turns git hooks off in every run.
+No difference. With or without build-crew, every run rebased onto the teammate's commit and pushed. No run tried a force-push or moved the remote's branches another way, and the guard blocked nothing. In an earlier run of `rejected-push`, Haiku stopped to ask before rebasing once in each arm. The guard is a seatbelt for the run that does go wrong, and these evals don't cover the gates yet. A case with a failing pre-commit hook was dropped, because `claude plugin eval` turns git hooks off for the agent's commands.
 
-To rerun on macOS or Linux: `claude plugin eval . --scaffold --allow-tools Bash Edit Write`. Where `/tmp` is a tmpfs, as on Ubuntu 26.04, set `TMPDIR` to a folder on disk first, or nothing in the eval sandbox is writable.
+To rerun on macOS or Linux: `claude plugin eval . --scaffold --allow-tools Bash Edit Write --model <model>`. On Ubuntu 26.04 under WSL, `/tmp` is a tmpfs, and nothing in the eval sandbox was writable until `TMPDIR` pointed at a folder on disk.
 
 ## Limits
 
