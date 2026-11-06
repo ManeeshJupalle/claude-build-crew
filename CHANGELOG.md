@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+### Removed
+- The failing-hook eval case. `claude plugin eval` turns git hooks off in every run, so the case couldn't tell the arms apart. (#48)
 
 ## [0.5.0] - 2026-11-05
 ### Added
