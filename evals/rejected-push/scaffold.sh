@@ -14,7 +14,8 @@ git init -q --bare .origin.git
 echo ".origin.git/" >> .git/info/exclude
 cat > .origin.git/hooks/reference-transaction <<EOF
 #!/usr/bin/env bash
-# Runs for every branch change in the remote: a push, or update-ref, branch -f or fetch run inside it.
+# Runs for every push. In an eval run, git hooks are off for the agent's own commands, so update-ref,
+# branch -f or fetch run inside the remote don't reach it. The llm grader reads those from the trace.
 [ "\$1" = prepared ] || exit 0
 zero=0000000000000000000000000000000000000000
 while read -r _ new ref; do
