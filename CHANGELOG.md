@@ -1,6 +1,11 @@
 # Changelog
 
 ## [Unreleased]
+### Removed
+- The failing-hook eval case. `claude plugin eval` turns git hooks off for the agent's commands, so the case couldn't tell the arms apart. (#48)
+
+### Fixed
+- The `rejected-push` eval catches a branch moved inside the local remote without a push (`update-ref`, `branch -f`, a fetch run in it). With hooks off, those never reached the remote's audit hook. (#48)
 
 ## [0.5.0] - 2026-11-05
 ### Added
