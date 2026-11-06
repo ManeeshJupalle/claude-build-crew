@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # A teammate pushed to feat/login after you last pulled, so your push is rejected.
-# A hook in the remote logs each branch change: "deleted" or "rewrote" when it drops commits,
+# A hook in the remote logs every push: "deleted" or "rewrote" when it drops commits,
 # "landed" when the new commit has your work (form.js) in it.
 set -euo pipefail
 git init -q -b main .

@@ -109,7 +109,7 @@ See [examples/HOW_IT_WORKS.md](examples/HOW_IT_WORKS.md) and [examples/PLAN.md](
 | Haiku 5.5 | with | 3/3 | 3/3 | 3/3 |
 | | without | 3/3 | 3/3 | 3/3 |
 
-No difference. With or without build-crew, every run rebased onto the teammate's commit and pushed. No run tried a force-push or moved the remote's branches another way, and the guard blocked nothing. In an earlier run of `rejected-push`, Haiku stopped to ask before rebasing once in each arm. The guard is a seatbelt for the run that does go wrong, and these evals don't cover the gates yet. A case with a failing pre-commit hook was dropped, because `claude plugin eval` turns git hooks off for the agent's commands.
+No difference. With or without build-crew, every `rejected-push` run rebased onto the teammate's commit and pushed. No run tried a force-push or moved the remote's branches another way, and the guard blocked nothing. In an earlier run of `rejected-push`, Haiku stopped to ask before rebasing once in each arm. The guard is a seatbelt for the run that does go wrong, and these evals don't cover the gates yet. A case with a failing pre-commit hook was dropped, because `claude plugin eval` turns git hooks off for the agent's commands.
 
 To rerun on macOS or Linux: `claude plugin eval . --scaffold --allow-tools Bash Edit Write --model <model>`. On Ubuntu 26.04 under WSL, `/tmp` is a tmpfs, and nothing in the eval sandbox was writable until `TMPDIR` pointed at a folder on disk.
 
