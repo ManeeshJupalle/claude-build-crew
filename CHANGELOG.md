@@ -16,8 +16,8 @@
 - The `rejected-push` eval catches a branch moved inside the local remote without a push (`update-ref`, `branch -f`, a fetch run in it). With hooks off, those never reached the remote's audit hook. (#48)
 - The `rejected-push` eval no longer passes work pushed only to `main`. It also fails a run that copies a ref file into the remote, or pushes with the remote's hooks off. (#53)
 - `deps.py` fixes for npm and pip: (#55)
-  - When pip can't find the latest version of a package, it says why: the package isn't on the index, or it's a pre-release, since `pip list` looks only for releases. Before, it always asked whether the index was reachable. It still asks that when pip found nothing at all.
-  - With npm workspaces, each installed copy of a package is listed, with its `location`. Before, only the last one was kept.
+  - When pip finds no release at or above a package's installed version, the message says that and names the possible causes, adding what the version itself shows: a pre-release or a local version, such as `+cu118`. Before, it only asked whether the index was reachable. It still asks that when pip found nothing at all.
+  - With npm workspaces, each installed copy of a package is listed, with its `location` and its `dependents`. A vulnerability marks only the copies `npm audit` names, also one that isn't outdated. Before, only the last copy was kept. `/deps` installs an update in each dependent, with `-w` for a workspace.
   - An update from 0.0.x to 0.0.y counts as a major bump, as npm's `^` reads it, so `/deps` skips it unless you name the package. Before, it was a patch.
 
 ## [0.5.0] - 2026-11-05
