@@ -264,6 +264,76 @@ BLOCKED = [
     # a value starting with - can be the next parameter
     "pwsh -wd -f -c 'git push --force'",
     "pwsh -ep -File -c 'git push --force'",
+    # a heredoc starts only outside quotes and comments, and ends at its whole delimiter
+    "# see <<EOF\ngit push --force\nEOF",
+    "echo \"<<B\"\ngit push --force\nB",
+    "echo \"<<EOFX <<B\"\nEOF\ngit push --force\nB",
+    "echo '<<EOF'\ngit push --force\nEOF",
+    "echo \\<<EOF\ngit push --force\nEOF",              # \< is a plain <, so this reads the file EOF
+    "x=$(echo '<<EOF')\ngit push --force\nEOF",
+    "cat <<<EOF\ngit push --force\nEOF",                # a here-string: the next line runs
+    "cat <<E\"OF\"\nhi\nEOF\ngit push --force\nE",       # the delimiter is EOF
+    "cat <<EOF.x\nhi\nEOF.x\ngit push --force\nEOF",
+    "cat <<'EOF'x\nhi\nEOFx\ngit push --force\nEOF",
+    "echo $((x<<y))\ngit push --force\ny",              # a shift, not a heredoc
+    # -o takes a value, also in a cluster, and -c runs the first word that isn't an option
+    "bash -euo pipefail <<'EOF'\ngit push --force\nEOF",
+    "echo 'git push --force' | bash -eo pipefail",
+    "echo 'git push --force' | bash +o posix -O extglob",
+    "bash -c -e 'git push --force'",
+    "bash -oc pipefail 'git push --force'",
+    "bash -co pipefail 'git push --force'",
+    "bash -euo pipefail -c 'git push --force'",
+    "bash -sc 'git push --force'",                      # -c wins over -s
+    "fish -c '-x; git push --force'",                   # fish and csh run the word right after -c
+    "fish --command='git push --force'",
+    # other ways for a shell to read stdin
+    "echo 'git push --force' | bash /dev/stdin",
+    "echo 'git push --force' | sh /dev/fd/0",
+    "echo 'git push --force' | bash /proc/self/fd/0",
+    "echo 'git push --force' | bash /dev//stdin",
+    "echo 'git push --force' | bash ../../dev/stdin",
+    "echo git push --force | cmd",
+    "echo git push --force | cmd.exe /q",
+    "echo git push --force | cmd /k echo hi",           # /k reads stdin after its command
+    "cmd < steps.bat",
+    "bash<<EOF\ngit push --force\nEOF",
+    "bash -s<<<'git push --force'",
+    "echo 'git push --force' | bash 2>/dev/null",
+    "echo 'git push --force' | bash >/dev/null",
+    "echo 'git push --force' | bash 2>&1",
+    "echo 'git push --force' | bash &>/dev/null",
+    "echo 'git push --force' | bash -c bash",           # the inner shell reads the same stdin
+    "echo 'git push --force' | bash -c 'eval sh'",
+    "echo 'git push --force' | xargs bash -c",          # xargs passes the command
+    "echo 'git push --force' | xargs -I{} bash -c '{}'",
+    "echo 'git push --force' | xargs -I {} bash -c {}",
+    "echo 'git push --force' | xargs --replace sh -c 'echo {}'",
+    "echo 'git push --force' | xargs -a/dev/null bash",  # with -a, the shell keeps xargs's stdin
+    "echo 'git push --force' | xargs --arg-file=/dev/null bash",
+    "echo 'git push --force' | sudo -u xargs bash",       # xargs is a value here, not xargs
+    "cat <<EOF;git push --force\nbody\nEOF",             # the line a heredoc starts on still runs
+    # a redirect is dropped with its file, and never takes an argument with it
+    "git push &>/dev/null --force",
+    "git push 2>&1 --force",
+    "git push --force>/dev/null",
+    "git push 2>&- --force",
+    "git push >|out.txt --force",
+    "git config core.hooksPath \"2>&1\"",
+    "git config core.hooksPath 2\\>x",
+    "git config core.hooksPath x 2>/dev/null",
+    "git config core.hooksPath 2 >/dev/null",           # 2 is the value: it isn't attached to >
+    "git config core.hooksPath a2>/dev/null",
+    # a GraphQL query read from a file, stdin or $(...) can't be verified
+    "gh api 'gr%61phql' --input -",                    # gh sends it as written, and GitHub decodes it
+    "gh api '%67raphql' -F query=@q.graphql",
+    "gh api graphql -f query=\"$(cat q.graphql)\"",
+    "gh api graphql -f query=$(cat q.graphql)",
+    "gh api graphql -F query=`cat q.graphql`",
+    "gh api graphql -fquery=\"$(cat q.graphql)\"",
+    "gh api graphql --raw-field=query=\"$(cat q.graphql)\"",
+    "gh api graphql -f \"$(cat fields.txt)\"",
+    "gh api \"$(echo graphql)\" --input -",
 ]
 
 # blocked because they can't be parsed, the only cases allowed to block that way
@@ -363,6 +433,30 @@ ALLOWED = [
     "cat files.txt | bash scripts/each.sh",
     "echo hi | pwsh -c 'Write-Output $input'",
     "pwsh --version",
+    # heredoc bodies are data, also a second one on the same line
+    "cat <<'EOF' > notes.md\n# Title\nIt's done; see <<that>> and $(this).\nEOF",
+    "cat <<A <<B\nfirst\nA\nsecond; it's fine\nB",
+    "cat <<-\tEOF\n\tdon't\n\tEOF",
+    # a redirect isn't an argument
+    "git config --get core.hooksPath 2>/dev/null",
+    "git config --get core.hooksPath 2>&1",
+    "git config core.hooksPath >/dev/null 2>&1",
+    "git config --get core.hooksPath &>/dev/null || echo none",
+    "npm test >test.log 2>&1",
+    "git push -u origin feat/x 2>&1 | tail -1",
+    # a shell given a script, or xargs giving it one
+    "bash -euo pipefail scripts/ci.sh",
+    "echo hi | bash -eo pipefail scripts/each.sh",
+    "bash -o pipefail -c 'npm test | tee test.log'",
+    "bash -c 'echo \"$0\"' -e",
+    "ls scripts/*.sh | xargs -n1 bash",
+    "find . -name '*.sh' | xargs -I{} bash {}",
+    "git ls-files '*.sh' | xargs bash -c 'for f; do bash -n \"$f\"; done' _",
+    "echo y | cmd /c del build.log",
+    # only a GraphQL endpoint refuses a query from a file, and a $(...) variable can't add a mutation
+    "gh api repos/o/graphql-tools/issues --input body.json",
+    "gh api repos/o/r/contents/schema.graphql -X PUT -f message=x -F content=@schema.graphql",
+    "gh api graphql -f query='query($owner: String!) { repositoryOwner(login: $owner) { id } }' -f owner=\"$(whoami)\"",
 ]
 
 # commands from Claude Code's PowerShell tool
@@ -457,6 +551,18 @@ PS_BLOCKED = [
     "pwsh -c ('git push --force')",
     "$env:HUSKY = (0)",
     "Set-Item env:HUSKY -Value:0",
+    # a redirect is dropped with its file, but a quoted one is a word, and the file's $(...) still runs
+    "git config core.hooksPath '2>$null'",
+    "git config core.hooksPath x 2>$null",
+    "git push 2>&1 --force",
+    "git push 2>$null --force",
+    "Write-Output x > \"$(git push --force)\"",
+    # || runs the next command, but a pipe still feeds it
+    "git pull || 'git push --force' | pwsh -NoProfile",
+    # a GraphQL query read from $(...) or an encoded endpoint
+    "gh api graphql -f query=\"$(Get-Content q.graphql)\"",
+    "gh api graphql -f query=$(Get-Content q.graphql -Raw)",
+    "gh api 'gr%61phql' --input -",
 ]
 
 PS_UNPARSEABLE = ["git commit -m 'unbalanced", "git push --force`"]
@@ -504,6 +610,11 @@ PS_ALLOWED = [
     "$line = \"SKIP=lint\"",
     "Set-Item env:NODE_ENV test",
     "Set-Content -Path notes.txt -Value env:SKIP",
+    # a redirect isn't an argument, and PowerShell 7's || isn't a pipe
+    "git config --get core.hooksPath 2>$null",
+    "git config --get core.hooksPath *> $null",
+    "npm test > test.log 2>&1",
+    "git pull || pwsh -NoProfile",
 ]
 
 
@@ -613,7 +724,8 @@ def test_blocks_commands_too_long_or_slow_to_check(monkeypatch):
     # if the hook times out, Claude Code runs the command
     res = run_guard("git status && " * 10_000)
     assert res.returncode == 2 and b"too long" in res.stderr
-    for cmd, tool in (("cat <<" + "A" * 99_000, "Bash"), ("cat <<A\n" * 12_000, "Bash"), ("@'\n" * 30_000, "PowerShell"),
+    for cmd, tool in (("cat <<" + "A" * 99_000, "Bash"), ("cat <<A\n" * 12_000, "Bash"),
+                      ("x=$(cat <<A\nA\n)\n" * 5_000, "Bash"), ("@'\n" * 30_000, "PowerShell"),
                       ("si" + " env:A" * 16_000 + "; git push --force", "PowerShell")):
         start = time.monotonic()
         run_guard(cmd, tool)

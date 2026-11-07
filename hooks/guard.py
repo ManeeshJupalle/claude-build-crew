@@ -16,11 +16,13 @@ from __future__ import annotations
 import bisect
 import json
 import os
+import posixpath
 import re
 import shlex
 import subprocess
 import sys
 import time
+import urllib.parse
 
 PROTECTED = re.compile(r"^(main|master|develop|release/.+)$")
 # the full command, so an agent stopped from merging doesn't have to hunt for the plugin's folder
@@ -29,7 +31,8 @@ MERGE_GATE = f'bash "{PLUGIN_ROOT}/run.sh" gates/merge_gate.py <PR> --merge'
 SEPARATORS = {"&&", "||", ";", "|", "&", "\n", "|&", ";;"}
 WRAPPERS = {"sudo", "command", "exec", "time", "nice", "ionice", "nohup", "env", "xargs", "timeout",
             "stdbuf", "caffeinate", "chronic"}
-WRAPPER_VALUE_FLAGS = {"-u", "-g", "-n", "-s", "-k", "-c", "-p", "-o", "-e", "-i", "--signal", "--kill-after", "--user"}
+WRAPPER_VALUE_FLAGS = {"-u", "-g", "-n", "-s", "-k", "-c", "-p", "-o", "-e", "-i", "-I", "--signal", "--kill-after",
+                       "--user"}
 # git config from the environment, in any case: Windows names ignore case, so git_config_parameters works there.
 # Not HUSKY or SKIP: lowercase skip=1 is an everyday shell variable.
 HOOK_SKIP_ENV = re.compile(r"^(HUSKY=0|HUSKY_SKIP_HOOKS=|HUSKY_SKIP_INSTALL=|SKIP=|PRE_COMMIT_ALLOW_NO_CONFIG=|GIT_HOOKS_PATH="
@@ -43,9 +46,13 @@ CONFIG_READ_WORDS = {"--local", "--global", "--system", "--worktree", "--show-or
                      "--get", "--get-all", "get", "--all"}
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "mksh", "ash", "fish", "csh", "tcsh"}
 KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "export"}  # what follows is a command
-PLACEHOLDERS = {c: chr(0xE000 + n) for n, c in enumerate(";&|\n(){}#<")}  # stand-ins for quoted separators
+PLACEHOLDERS = {c: chr(0xE000 + n) for n, c in enumerate(";&|\n(){}#<>")}  # stand-ins for quoted separators
 RESTORE = {ord(v): k for k, v in PLACEHOLDERS.items()}
-COMMENT_START = set(" \t\n;&|()")  # a # right after one of these starts a comment
+COMMENT_START = set(" \t\n;&|()")  # a word starts right after one of these, so a # there starts a comment
+REDIRECT_OP = re.compile(r"&>>?|<>|<&|>>|>&|>\||[<>]")  # its & or | is part of it, not a separator: 2>&1, >|, &>
+# a redirect word from prescan(), whose & and | are placeholders. What follows the operator is its file
+REDIRECT = re.compile(rf"\d*(<<-|[<>]+[{PLACEHOLDERS['&']}{PLACEHOLDERS['|']}]?)|{PLACEHOLDERS['&']}>+")
+STDIN_PATH = re.compile(r"(^|/)(dev/(stdin|fd/\d+)|proc/[^/]+/fd/\d+)$")
 SUBST = ""  # stands for a $(...) or `...` substitution, or a PowerShell group, checked on its own
 POWERSHELLS = {"pwsh", "powershell"}
 PS_VALUE_PARAMS = ("executionpolicy", "windowstyle", "inputformat", "outputformat", "version", "psconsolefile",
@@ -105,33 +112,51 @@ def local_branch_exists(name: str) -> bool:
         return False
 
 
-HEREDOC = re.compile(r"<<-?[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_])\1")
+def heredoc_word(cmd: str, i: int) -> tuple[str | None, int]:
+    """The delimiter of the heredoc whose << is at i, with its quotes removed (<<'EOF', <<E"OF", <<EOF.x), and where it
+    ends. None for a here-string (<<<), or for a word bash may read another way: empty, or with $ or ` in it."""
+    if cmd.startswith("<<<", i):
+        return None, i + 3
+    j = i + 2 + (cmd[i + 2:i + 3] == "-")
+    while cmd[j:j + 1] in (" ", "\t"):
+        j += 1
+    word = []
+    while j < len(cmd) and cmd[j] not in " \t\n;&|()<>":
+        if cmd[j] in "'\"":
+            end = cmd.find(cmd[j], j + 1)
+            if end < 0 or cmd[j] == '"' and "\\" in cmd[j + 1:end]:
+                return None, i + 2
+            word.append(cmd[j + 1:end])
+            j = end + 1
+        else:
+            word.append(cmd[j + 1:j + 2] if cmd[j] == "\\" else cmd[j])
+            j += 2 if cmd[j] == "\\" else 1
+    text = "".join(word)
+    return (text, j) if text and not set(text) & set("$`") else (None, i + 2)
 
 
-def strip_heredocs(cmd: str) -> str:
-    """Heredoc bodies are data (commit messages, PR bodies), not commands: drop them, keeping the line each starts on.
-    A heredoc with no closing line is left alone. Each closing line is looked up rather than searched for, since a
-    regex search per heredoc takes quadratic time on a long command, and the hook can't stop a regex at its limit."""
-    closers, pos = {}, 0  # a line's text -> where lines with that text end
-    for line in cmd.split("\n"):
-        pos += len(line)
-        closers.setdefault(line.strip(" \t"), []).append(pos)
-        pos += 1
-    out, i = [], 0
-    for m in HEREDOC.finditer(cmd):
-        body = cmd.find("\n", m.end()) + 1
-        if m.start() < i or not body:
-            continue
-        ends = closers.get(m.group(2), [])
-        k = bisect.bisect_left(ends, body)
-        if k < len(ends):
-            out.append(cmd[i:body - 1])
-            i = ends[k]
-    return "".join(out) + cmd[i:]
+def heredoc_end(cmd: str, start: int, words: list[str], lines: dict) -> int:
+    """Where the bodies of heredocs starting at start end: at the end of the last one's closing line, or -1 if one has
+    none, which leaves the rest to be read as commands. lines maps a line's text to where lines with that text end, and
+    is filled on first use: a regex search per heredoc takes quadratic time on a long command, and the hook can't stop
+    a regex at its limit."""
+    if not lines:
+        pos = 0
+        for line in cmd.split("\n"):
+            pos += len(line)
+            lines.setdefault(line.strip(" \t"), []).append(pos)
+            pos += 1
+    for w in words:
+        ends = lines.get(w, [])
+        k = bisect.bisect_left(ends, start)
+        if k == len(ends):
+            return -1
+        start = ends[k] + 1
+    return start - 1
 
 
 def ps_herestring(cmd: str, i: int, closers: dict) -> tuple[str, str, int] | None:
-    """The quote, text and end of a here-string opening at i (@'...'@ or @"..."@), or None. Like strip_heredocs(),
+    """The quote, text and end of a here-string opening at i (@'...'@ or @"..."@), or None. Like heredoc_end(),
     in linear time: closers holds where the next closing '@ and "@ are, and later here-strings reuse it."""
     m = PS_HERESTRING.match(cmd, i)
     if not m:
@@ -159,8 +184,9 @@ def long_opt(tok: str, *names: str) -> bool:
     return len(tok) > 2 and tok.startswith("--") and any(n.startswith(tok) for n in names)
 
 
-def closing(cmd: str, i: int) -> int:
-    """Index just past the ) or ` that closes the $( or ` at i, or -1."""
+def closing(cmd: str, i: int, lines: dict) -> int:
+    """Index just past the ) or ` that closes the $( or ` at i, or -1. A heredoc's body inside $(...) is skipped, so
+    a ' or ) in it doesn't count. lines is heredoc_end()'s."""
     if cmd[i] == "`":
         j = i + 1
         while j < len(cmd):
@@ -171,7 +197,7 @@ def closing(cmd: str, i: int) -> int:
                 return j + 1
             j += 1
         return -1
-    j, depth, quote = i + 2, 1, None
+    j, depth, quote, heredocs = i + 2, 1, None, []
     while j < len(cmd):
         c = cmd[j]
         if c == "\\" and quote != "'":
@@ -181,6 +207,14 @@ def closing(cmd: str, i: int) -> int:
             quote = None if c == quote else quote
         elif c in "'\"":
             quote = c
+        elif cmd.startswith("<<", j):
+            word, j = heredoc_word(cmd, j)
+            heredocs += [word] if word else []
+            continue
+        elif c == "\n" and heredocs:
+            end, heredocs = heredoc_end(cmd, j + 1, heredocs, lines), []
+            j = end if end >= 0 else j + 1
+            continue
         elif c in "()":
             depth += 1 if c == "(" else -1
             if depth == 0:
@@ -192,8 +226,9 @@ def closing(cmd: str, i: int) -> int:
 def prescan(cmd: str) -> tuple[str, list[str]]:
     """shlex returns a quoted ';' the same as a bare one, and splits $(...) into words. So before tokenizing, swap
     quoted or escaped separators for placeholders, and turn each $(...) and `...` into one word, returning the
-    commands inside to be checked on their own."""
-    out, inner, quote, i = [], [], None, 0
+    commands inside to be checked on their own. Each redirect becomes a word of its own (x>f is x >f), and heredoc
+    bodies are data (commit messages, PR bodies), not commands: drop them, keeping the line each starts on."""
+    out, inner, quote, i, heredocs, lines = [], [], None, 0, [], {}
     while i < len(cmd):
         c = cmd[i]
         if c == "\\" and quote != "'" and i + 1 < len(cmd):
@@ -205,7 +240,7 @@ def prescan(cmd: str) -> tuple[str, list[str]]:
             out.append("$$")
             i += 2
         elif quote != "'" and (c == "`" or cmd.startswith("$(", i)):
-            end = closing(cmd, i)
+            end = closing(cmd, i, lines)
             if end < 0:
                 raise ValueError("unbalanced substitution")
             # inside `...`, \` \$ and \\ stand for the plain characters, so `echo \`git push\`` nests
@@ -229,6 +264,24 @@ def prescan(cmd: str) -> tuple[str, list[str]]:
             quote = None if quote else c
             out.append(c)
             i += 1
+        elif quote is None and (c in "<>" or cmd.startswith("&>", i) and cmd[i - 1:i] != "&"):  # not &&>
+            k = len(out)
+            while k and out[k - 1].isdigit():
+                k -= 1
+            fd = c != "&" and k < len(out) and (k == 0 or out[k - 1] in COMMENT_START)  # 2>f, but not a2>f
+            if out and out[-1] not in COMMENT_START and not fd:
+                out.append(" ")
+            if cmd.startswith("<<", i):
+                word, end = heredoc_word(cmd, i)
+                heredocs += [word] if word else []
+            else:
+                end = REDIRECT_OP.match(cmd, i).end()
+            out.append(cmd[i:end].replace("&", PLACEHOLDERS["&"]).replace("|", PLACEHOLDERS["|"]))
+            i = end
+        elif c == "\n" and quote is None and heredocs:  # the bodies start on the next line
+            out.append(c)
+            end, heredocs = heredoc_end(cmd, i + 1, heredocs, lines), []
+            i = end if end >= 0 else i + 1
         else:
             out.append(PLACEHOLDERS[c] if quote and c in PLACEHOLDERS else c)
             i += 1
@@ -278,27 +331,43 @@ def strip_prefix(seg: list[str]) -> list[str]:
     return seg[i:]
 
 
-def drop_stdin_redirects(seg: list[str]) -> tuple[list[str], bool]:
-    """Drop <<EOF, < file and <<< text from a command, and say whether it had any. A quoted < is a placeholder."""
+def drop_redirects(seg: list[str]) -> tuple[list[str], bool]:
+    """Drop redirects (<<EOF, < file, <<< text, 2>/dev/null, >> log, 2>&1) from a command, and say whether one reads
+    stdin. prescan() made each one a word, and a quoted < or > a placeholder."""
     words, found, k = [], False, 0
     while k < len(seg):
-        if seg[k][:1] == "<":
-            found = True
-            k += 2 if not seg[k].strip("<-") else 1  # a bare < or <<< takes the next word
+        m = REDIRECT.match(seg[k])
+        if m:
+            found = found or "<" in m.group()
+            k += 1 if seg[k][m.end():] else 2  # a bare > or <<< takes the next word
         else:
             words.append(seg[k])
             k += 1
     return words, found
 
 
-def shell_script(args: list[str]) -> str | None:
-    """The script file bash, sh and the like run, or None when they read their commands from stdin (none, or -s)."""
-    k = 0
+def shell_operand(args: list[str]) -> tuple[str | None, bool]:
+    """What bash, sh and the like run, and whether -c makes it a command rather than a script file: the first word
+    that isn't an option (bash -c -e '…' runs '…'). None means they read their commands from stdin: no script, -s, or
+    a path such as /dev/stdin. -o, -O, --rcfile and --init-file take a value, also in a cluster (-euo pipefail)."""
+    k, flags = 0, ""
     while k < len(args) and args[k][:1] in ("-", "+"):
-        if "s" in short_flags(args[k]):
-            return None
-        k += 2 if args[k] in ("-o", "+o", "-O", "+O", "--rcfile", "--init-file") else 1
-    return args[k] if k < len(args) else None
+        a, k = args[k], k + 1
+        if a in ("-", "--"):
+            break
+        if a.startswith("--command="):  # fish
+            return a.split("=", 1)[1], True
+        if a in ("--rcfile", "--init-file"):
+            k += 1
+        elif a == "--command":
+            flags += "c"
+        elif not a.startswith("--"):
+            flags += a[1:]
+            k += a.count("o") + a.count("O")
+    script = args[k] if k < len(args) else None
+    if "c" in flags:
+        return script, True
+    return (None if "s" in flags or script and STDIN_PATH.search(posixpath.normpath(script)) else script), False
 
 
 def check_git(args: list[str], state: dict) -> str | None:
@@ -476,10 +545,18 @@ def check_gh(args: list[str]) -> str | None:
             return "Changing branches, refs or protection rules through the API is forbidden."
         # a GraphQL query read from stdin or a file (--input, query=@-, query=@file) can't be checked for mutations
         endpoint = gh_api_endpoint(args)
-        # refusing is safe, so any endpoint that may reach GraphQL counts (graphql?x=1, /GraphQL, full URLs) ...
-        if re.search(r"graphql", endpoint, re.I) and any(a == "--input" or a.startswith("--input=") or
-                                                         re.match(r"(-i*[fF]|--(raw-)?field=?)?\w*=@", a) for a in args):
+        # refusing is safe, so any endpoint that may reach GraphQL counts: a graphql path segment, in any case and
+        # encoding (graphql?x=1, /GraphQL, gr%61phql, full URLs, but not schema.graphql), or an endpoint from $(...) ...
+        maybe_graphql = re.search(rf"(^|/)graphql(?![\w-])|{SUBST}", urllib.parse.unquote(endpoint), re.I)
+        if maybe_graphql and any(a == "--input" or a.startswith("--input=") or
+                                 re.match(r"(-i*[fF]|--(raw-)?field=?)?\w*=@", a) for a in args):
             return "A GraphQL query read from stdin or a file can't be verified; pass it with -f query='…'."
+        fields = [m.group(3) or (args[k + 1] if k + 1 < len(args) else "") for k, a in enumerate(args)
+                  if (m := re.fullmatch(r"(-i*[fF]|--(raw-)?field=?)(.*)", a, re.S))]
+        # a query, or a field's name, from $(...) can hide a mutation. A variable from one can't: -f owner="$(…)".
+        # PowerShell reads query=$(…) as query=$ and a group: a query can't end with $
+        if maybe_graphql and any(re.match(rf"(?s)(query=.*|[^=]*)({SUBST}|\$\(|\$\Z)", f) for f in fields):
+            return "A GraphQL query built from $(…) can't be verified; pass it with -f query='…'."
         # ... but skipping the REST rule isn't, so only an exact GraphQL endpoint does: not .../git/refs/heads/graphql
         graphql = re.fullmatch(r"(https?://[^/]+(/api)?)?/?graphql", endpoint) is not None
         if (not graphql and gh_api_method(args) != "GET"  # GraphQL is always POST: its mutations count
@@ -565,36 +642,53 @@ def check_powershell(args: list[str], state: dict, depth: int, stdin: bool = Fal
     if args[k:k + 1] == ["-"]:
         return READS_STDIN
     if k < len(args):
-        return check(" ".join(args[k:]), depth + 1, state, "powershell")
+        return check(" ".join(args[k:]), depth + 1, state, "powershell", stdin)
     return READS_STDIN if stdin else None
 
 
 def check_segment(seg: list[str], state: dict, depth: int, stdin: bool = False) -> str | None:
     check_time()
     rest = strip_prefix(seg)
-    for t in seg[:len(seg) - len(rest)]:  # assignments can follow keywords and wrappers too: env HUSKY=0 git ...
+    prefix = seg[:len(seg) - len(rest)]
+    for t in prefix:  # assignments can follow keywords and wrappers too: env HUSKY=0 git ...
         if HOOK_SKIP_ENV.match(t):
             return f"Skipping git hooks via {t.split('=')[0]} is forbidden."
+    # xargs's options, when it runs the command: not when xargs is a value (sudo -u xargs)
+    xargs = next((prefix[k + 1:] for k, t in enumerate(prefix)
+                  if prog_name(t) == "xargs" and (k == 0 or prefix[k - 1] not in WRAPPER_VALUE_FLAGS)), None)
     seg = rest
     if not seg:
         return None
     prog = prog_name(seg[0])
     args = seg[1:]
     if prog in SHELLS:
-        for k, a in enumerate(args):
-            if (a in ("-c", "--command") or "c" in short_flags(a)) and k + 1 < len(args):
-                return check(args[k + 1], depth + 1, state)
-        if stdin and not shell_script(args):  # echo 'git push --force' | bash, bash <<'EOF'
+        script, command = shell_operand(args)
+        if xargs is not None:  # xargs passes what it reads as arguments
+            if command and (script is None or any(set(short_flags(t)) & set("IiJ") or long_opt(t, "--replace")
+                                                  for t in xargs)):
+                return "A shell running a command xargs builds from its input can't be verified."
+            # the shell gets a script's name, and /dev/null as stdin, unless -a reads the arguments from a file
+            stdin = stdin and any("a" in short_flags(t) or long_opt(t, "--arg-file") for t in xargs)
+        # bash runs -c's command from its first operand (bash -c -e '…'), fish and csh from the word after -c
+        commands = [args[k + 1] for k, a in enumerate(args[:-1]) if a in ("-c", "--command") or "c" in short_flags(a)]
+        for text in dict.fromkeys(commands + ([script] if command and script is not None else [])):
+            reason = check(text, depth + 1, state, stdin=stdin)  # the command reads the shell's stdin too
+            if reason:
+                return reason
+        if stdin and not script and not commands:  # echo 'git push --force' | bash, bash <<'EOF'
             return READS_STDIN
     if prog in POWERSHELLS:
         return check_powershell(args, state, depth, stdin)
-    if prog == "cmd":
+    if prog == "cmd":  # with no /c, or with /k, cmd runs what it reads from stdin
         for k, a in enumerate(args):
             m = re.match(r"/+[ckr]", a, re.I)  # Git Bash turns /c into a path, so it's written //c there; /cgit runs too
             if m:
-                return check(" ".join([a[m.end():], *args[k + 1:]]), depth + 1, state)
+                reason = check(" ".join([a[m.end():], *args[k + 1:]]), depth + 1, state, stdin=stdin)
+                return reason or (READS_STDIN if stdin and m.group()[-1] in "kK" else None)
+        if stdin:
+            return READS_STDIN
     if prog == "eval":
-        return check(" ".join(args), depth + 1, state)
+        return check(" ".join(args), depth + 1, state, stdin=stdin)
     if prog == "git":
         return check_git(args, state)
     if prog == "gh":
@@ -650,12 +744,14 @@ def ps_tokenize(cmd: str) -> tuple[list, list[str]]:
     $(...) in "..." and @"..."@, which run. Unlike the Bash path, quoting is tracked, so a quoted ';' is a word.
     Backtick escapes (also inside "..."), '' is a quote inside '...', a backslash is an ordinary character, a
     backtick at the end of a line continues it, and a here-string is one word."""
-    out, inner, word, quoted, lead, i, closers = [], [], [], False, False, 0, {}
+    out, inner, word, quoted, lead, i, closers, redirect = [], [], [], False, False, 0, {}, False
 
     def end_word():
-        nonlocal word, quoted, lead
+        nonlocal word, quoted, lead, redirect
         if word or quoted:
-            out.append(Quoted("".join(word)) if lead else "".join(word))
+            if not redirect:  # a redirect's file isn't an argument
+                out.append(Quoted("".join(word)) if lead else "".join(word))
+            redirect = False
         word, quoted, lead = [], False, False
 
     while i < len(cmd):
@@ -721,10 +817,21 @@ def ps_tokenize(cmd: str) -> tuple[list, list[str]]:
             if j < 0:
                 raise ValueError("unclosed comment")
             i = j + 2
+        elif c == ">":  # a redirect (2>$null, >> log, *>&1) is dropped with its file
+            if not quoted and "".join(word) in ("1", "2", "3", "4", "5", "6", "*"):
+                word = []  # the stream it redirects
+            end_word()
+            i += 2 if cmd.startswith(">>", i) else 1
+            if re.match(r"&[12]", cmd[i:i + 2]):  # 2>&1 joins two streams: no file
+                i += 2
+            else:
+                redirect = True
         elif c in ";|&\n(){}":
             end_word()
-            out.append(SEP if c in ";&\n" else PIPE if c == "|" else OPEN if c in "({" else CLOSE)
-            i += 1
+            redirect = False
+            sep = c in ";&\n" or cmd.startswith("||", i)  # PowerShell 7's || runs the next command: it isn't a pipe
+            out.append(SEP if sep else PIPE if c == "|" else OPEN if c in "({" else CLOSE)
+            i += 2 if cmd.startswith("||", i) else 1
         else:
             word.append(c)
             i += 1
@@ -795,7 +902,7 @@ def ps_command_word(words: list) -> bool:
         bool(re.match(r"[A-Za-z_.\\/]", words[0]))
 
 
-def check_ps(cmd: str, depth: int, state: dict) -> str | None:
+def check_ps(cmd: str, depth: int, state: dict, stdin: bool = False) -> str | None:
     try:
         tokens, inner = ps_tokenize(cmd)
     except ValueError:
@@ -823,21 +930,22 @@ def check_ps(cmd: str, depth: int, state: dict) -> str | None:
             elif isinstance(t, str):
                 seg.append(t)
             else:
-                reason = check_ps_segment(seg, state, depth, piped) if seg else None
+                reason = check_ps_segment(seg, state, depth, piped or stdin) if seg else None
                 if reason:
                     return reason
                 seg, piped = [], t is PIPE or (piped and not seg)
     return None
 
 
-def check(cmd: str, depth: int = 0, state: dict | None = None, shell: str = "bash") -> str | None:
+def check(cmd: str, depth: int = 0, state: dict | None = None, shell: str = "bash", stdin: bool = False) -> str | None:
+    """stdin: whether the command reads a pipe or a redirect, as when a shell fed by one runs it."""
     if depth > 3:
         return "Command nesting too deep to verify."
     state = {} if state is None else state
     if shell == "powershell":
-        return check_ps(cmd, depth, state)
+        return check_ps(cmd, depth, state, stdin)
     try:
-        cmd, inner = prescan(strip_heredocs(cmd))
+        cmd, inner = prescan(cmd)
         tokens = tokenize(cmd)
     except ValueError:
         return "Could not parse this command (unbalanced quotes?), so it can't be verified."
@@ -852,8 +960,8 @@ def check(cmd: str, depth: int = 0, state: dict | None = None, shell: str = "bas
         state.clear()
         state.update(start)
         for seg, piped in segments(tokens, braces):
-            seg, redirected = drop_stdin_redirects(seg)
-            reason = check_segment([t.translate(RESTORE) for t in seg], state, depth, piped or redirected)
+            seg, redirected = drop_redirects(seg)
+            reason = check_segment([t.translate(RESTORE) for t in seg], state, depth, piped or redirected or stdin)
             if reason:
                 return reason
     return None
