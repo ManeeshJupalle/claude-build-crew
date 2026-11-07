@@ -11,6 +11,7 @@
 - The failing-hook eval case. `claude plugin eval` turns git hooks off for the agent's commands, so the case couldn't tell the arms apart. (#48)
 
 ### Fixed
+- `phase_gate.py check` fails when a phase has a second `**Skills:**` line, or a backticked word on it that isn't a skill name. Before, it ignored the second line and took a path like `docs/x.md` for a skill. `/build-phase` reads a skill's description before invoking it, and skips one that acts instead of advising. (#54)
 - The `rejected-push` eval catches a branch moved inside the local remote without a push (`update-ref`, `branch -f`, a fetch run in it). With hooks off, those never reached the remote's audit hook. (#48)
 
 ## [0.5.0] - 2026-11-05
