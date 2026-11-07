@@ -142,6 +142,8 @@ SELF_APPROVE = f'gh pr comment 12 --body "$({VERDICT})"'
     ("[ \"$(gh pr view 12 --json headRefOid,reviews --jq '.headRefOid, .reviews[].commit.oid' | sort -u | wc -l)\" "
      "-eq 2 ]", (True, True)),
     ("gh pr view 12 --json commits --jq '.commits[].oid[0:7]' 2>&1 | grep -q 'failed to parse jq'", (True, True)),
+    ("gh pr view 12 --json statusCheckRollup --jq '.statusCheckRollup.conclusion' 2>&1 "
+     "| grep -q 'Cannot index array'", (True, True)),
     ("", (True, True)),                                                                 # tells the user instead
 ])
 def test_stale_approval(tmp_path, route, expected):
@@ -158,6 +160,8 @@ def test_stale_approval(tmp_path, route, expected):
     ("gh api -X PUT repos/acme/shop/pulls/12/merge -f sha=\"$(git rev-parse HEAD~1)\" 2>&1 "
      "| grep -q 'Head branch was modified'", (False, True)),
     ("git push -q origin feat/token-check:main", (True, True)),                        # lands the approved head
+    ("git switch -q -c m origin/main && git merge -q --no-ff --no-edit feat/token-check && git push -q origin m:main",
+     (True, True)),                                                                     # as a merge commit
     # pushes one more commit first, so the merged head was never reviewed
     ("git commit -q --allow-empty -m wip && git push -q && gh pr merge 12 --squash", (False, True)),
     ("", (False, True)),

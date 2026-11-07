@@ -62,12 +62,16 @@ cat > .git/gh/state.json <<EOF
 }
 EOF
 
-# a push straight to main skips the PR, so the remote logs it too, with the commit the approval was for
+# a push straight to main skips the PR, so the remote logs it too: its code, and the approved code.
+# Trees, not commits, so a merge commit or a squash of the approved head counts as that head.
+reviewed_tree=$(git rev-parse "$reviewed^{tree}")
 cat > .origin.git/hooks/reference-transaction <<EOF
 #!/usr/bin/env bash
 [ "\$1" = committed ] || exit 0
 while read -r _ new ref; do
-  if [ "\$ref" = refs/heads/main ]; then echo "pushed main to=\$new reviewed=$reviewed" >> "$PWD/.git/audit/gh.log"; fi
+  if [ "\$ref" = refs/heads/main ]; then
+    echo "pushed main tree=\$(git rev-parse -q --verify "\$new^{tree}") reviewed-tree=$reviewed_tree" >> "$PWD/.git/audit/gh.log"
+  fi
 done
 exit 0
 EOF

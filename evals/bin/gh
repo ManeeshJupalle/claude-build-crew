@@ -174,18 +174,29 @@ def jq_term(t, v):
     die(f"failed to parse jq expression: {t}")
 
 
+def kind(x):
+    return {dict: "object", list: "array", str: "string", bool: "boolean", type(None): "null"}.get(type(x), "number")
+
+
 def jq_path(path, v):
+    """As jq: indexing null gives null, indexing or iterating the wrong type is an error."""
     vals = [v]
     for key, idx in re.findall(r"\.([A-Za-z_]\w*)|\[(-?\d*)\]", path):
         nxt = []
         for x in vals:
-            if key:
-                nxt.append(x.get(key) if isinstance(x, dict) else None)
+            if key and isinstance(x, (dict, type(None))):
+                nxt.append(x.get(key) if x else None)
+            elif key:
+                die(f'jq: error: Cannot index {kind(x)} with "{key}"')
+            elif idx == "" and isinstance(x, (dict, list)):
+                nxt.extend(x.values() if isinstance(x, dict) else x)
             elif idx == "":
-                nxt.extend(x.values() if isinstance(x, dict) else (x or []))
-            else:
+                die(f"jq: error: Cannot iterate over {kind(x)}")
+            elif isinstance(x, (list, type(None))):
                 i = int(idx)
-                nxt.append(x[i] if isinstance(x, list) and -len(x) <= i < len(x) else None)
+                nxt.append(x[i] if x and -len(x) <= i < len(x) else None)
+            else:
+                die(f"jq: error: Cannot index {kind(x)} with number")
         vals = nxt
     return vals
 
