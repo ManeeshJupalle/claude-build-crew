@@ -26,6 +26,7 @@
   - `diff <(sort a) <(sort b)`: a process substitution is one word, and its command is checked
   - `git pull || pwsh -NoProfile`: PowerShell 7's `||` runs the next command, it isn't a pipe
   - `gh api` REST paths that only contain "graphql", such as `repos/o/graphql-tools/issues --input body.json`
+- In PowerShell, an operator in an expression isn't read as a flag: ``git commit -m ($lines -join "`n")`` is allowed. (#60)
 
 ### Security
 - The guard catches more ways past it: (#58)
@@ -37,6 +38,14 @@
   - bash options that hid the command: `-euo pipefail` before a heredoc, `bash -c -e '…'`, `-oc`, `-co`
   - a redirect that split a command, as in `git push &>/dev/null --force` or `git push 2>&1 --force`
   - a GraphQL query built from `$(…)`, or sent to an encoded endpoint such as `gr%61phql`
+- The guard catches more ways past it in PowerShell: (#60)
+  - a `)` in a `#` or `<# #>` comment inside `$(…)`, which doesn't close it
+  - assignments written `[string] $x = …` or `$x[0].y = …`
+  - `${env:USERPROFILE}` and `${env:HOME}` as delete targets
+  - a group whose output becomes arguments: `$(if ($true) {'--force'})`, `$(switch …)`, `(echo '--force')`, and values split by a newline or `;`, as in `@(⏎'x',⏎'--force'⏎)` or `$('x'; '--force')`
+  - `Set-Content -Encoding utf8 env:HUSKY 0`, `Set-Item -Filter * env:HUSKY 0` and `New-Item -Path Env: -Name HUSKY -Value 0`
+  - `gh api $(…) --input -`, whose endpoint PowerShell builds
+- From Bash, `rm --rec ~`: GNU rm takes a long option's unique prefix. (#60)
 - `merge_gate` passes only if the PR merged at the head the review approved. Before, it also passed when someone pushed a new commit and merged the PR outside the gate while it ran. (#56)
 
 ## [0.5.0] - 2026-11-05

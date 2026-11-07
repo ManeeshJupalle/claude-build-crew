@@ -61,17 +61,25 @@ PS_VALUE_PARAMS = ("executionpolicy", "windowstyle", "inputformat", "outputforma
 PS_VALUE_ALIASES = {"ep", "ex", "w", "wd", "o", "of", "i", "if", "v"}
 DANGEROUS_RM_TARGETS = {"/", "/*", "~", "~/", "~/*", "$HOME", "${HOME}", "$HOME/", "$HOME/*",
                         ".", "./", "./*", "..", "../", "*", ".*"}
-WINDOWS_ROOTS = re.compile(r"([a-z]:|\$env:(userprofile|home))(/\*?)?", re.I)  # C:\, $env:USERPROFILE\*
+# C:\, $env:USERPROFILE\*, ${env:HOME}
+WINDOWS_ROOTS = re.compile(r"([a-z]:|\$env:(userprofile|home)|\$\{env:(userprofile|home)\})(/\*?)?", re.I)
 RM_FLAGS = set("dfiIPRrvWx")  # rm's short options, GNU and BSD: with any other letter (-Force), rm fails
 PS_REMOVE = {"remove-item", "ri", "rm", "rmdir", "rd", "del", "erase"}
 PS_SET_ITEM = {"set-item", "si", "set-content", "sc", "new-item", "ni"}
+PS_SET_SWITCHES = ("force", "passthru", "nonewline", "asbytestream", "whatif", "confirm", "usetransaction", "verbose",
+                   "debug")
+# an assignment in an expression, = or $o = or $o=git: what follows runs as a command
+PS_ASSIGN_WORD = re.compile(r"(?:\$[^=\s]*?)?(?:[-+*/%]|\?\?)?=(.*)", re.S)
+# a group led by one of these outputs the literals in it: $(if ($x) {'--force'}), (echo '--force')
+PS_VALUE_LEADS = {"if", "switch", "foreach", "for", "while", "do", "try", "echo", "write", "write-output"}
 PS_QUOTES = {"'": "'", "‘": "'", "’": "'", "‚": "'", "‛": "'", '"': '"', "“": '"', "”": '"', "„": '"'}
 PS_HERESTRING = re.compile(r"@(['\"])[ \t]*\r?\n")  # opens @'...'@ or @"..."@, which closes at a line starting '@
-# $out, $script:x, ${out}, $x[0], [string[]]$x. No two parts can match the same text, so no slow backtracking
-PS_VAR = r"(?:\[[\w.]+(?:\[[\w.,]*\])*\])*(?:\$\{[^}]+\}|\$[\w:.]+)(?:\[[^\]]*\])*"
+# $out, $script:x, ${out}, $x[0], $x[0].y, [string[]]$x, [string] $x (words are joined with NUL). No two parts can
+# match the same text, so no slow backtracking
+PS_VAR = r"(?:\[[\w.]+(?:\[[\w.,]*\])*\]\0?)*(?:\$\{[^}]+\}|\$[\w:.]+)(?:\[[^\]]*\][\w.]*)*"
 # $x = , $a = $b = , $x, $y = , +=, ??= ... over a command's words joined with NUL
 PS_ASSIGNMENTS = re.compile(rf"(?:{PS_VAR}(?:\0{PS_VAR})*\0?(?:[-+*/%]|\?\?)?=(?!=)\0?)+")
-SEP, PIPE, OPEN, CLOSE = object(), object(), object(), object()  # PowerShell tokens: ; & newline, |, ( {, ) }
+SEP, PIPE, OPEN, BRACE, CLOSE = object(), object(), object(), object(), object()  # PowerShell: ; & \n, |, (, {, ) }
 READS_STDIN = "A shell reading its commands from stdin (a pipe, a heredoc or -) can't be verified."
 # Claude Code runs the command if this hook times out (60s), so a command too long or too slow to check is blocked.
 # Slow ones: thousands of git commits or switches, each asking git about branches, or a long chain of pwsh -wd /c,
@@ -584,8 +592,8 @@ def check_gh(args: list[str]) -> str | None:
         endpoint = gh_api_endpoint(args)
         # refusing is safe, so any endpoint that may reach GraphQL counts: a graphql path segment, in any case and
         # encoding (graphql?x=1, /GraphQL, gr%61phql, full URLs, but not schema.graphql), or an endpoint from $(...) ...
-        # (in PowerShell, a quoted "$(...)" stays text)
-        maybe_graphql = re.search(rf"(^|/)graphql(?![\w-])|{SUBST}|\$\(", urllib.parse.unquote(endpoint), re.I)
+        # (in PowerShell, a quoted "$(...)" stays text, and an unquoted one reads as $ and a group)
+        maybe_graphql = re.search(rf"(^|/)graphql(?![\w-])|{SUBST}|\$\(|\$\Z", urllib.parse.unquote(endpoint), re.I)
         if maybe_graphql and any(a == "--input" or a.startswith("--input=") or
                                  re.match(r"(-i*[fF]|--(raw-)?field=?)?\w*=@", a) for a in args):
             return "A GraphQL query read from stdin or a file can't be verified; pass it with -f query='…'."
@@ -604,7 +612,7 @@ def check_gh(args: list[str]) -> str | None:
 
 
 def check_rm(args: list[str]) -> str | None:
-    recursive = any(a == "--recursive" or set(short_flags(a)) <= RM_FLAGS and set("rR") & set(short_flags(a))
+    recursive = any(long_opt(a, "--recursive") or set(short_flags(a)) <= RM_FLAGS and set("rR") & set(short_flags(a))
                     for a in args)
     if not recursive:
         return None
@@ -789,6 +797,11 @@ def ps_subexpr_end(cmd: str, i: int) -> int:
             q, j = PS_QUOTES[c], j + 1
             while j < len(cmd) and PS_QUOTES.get(cmd[j]) != q:
                 j += 2 if q == '"' and cmd[j] == "`" else 1
+        elif cmd.startswith(("#", "<#"), j) and cmd[j - 1] in " \t\r\n;(){}|&":  # a ) in a comment doesn't close it
+            end = cmd.find("\n", j) if c == "#" else cmd.find("#>", j + 2) + 1
+            if end <= 0:
+                return -1
+            j = end
         elif c in "()":
             depth += 1 if c == "(" else -1
             if depth == 0:
@@ -815,8 +828,8 @@ def ps_subexprs(text: str) -> list[str]:
 
 
 def ps_tokenize(cmd: str) -> tuple[list, list[str]]:
-    """PowerShell words, with SEP, PIPE, OPEN and CLOSE for separators, pipes and brackets, and the commands inside
-    $(...) in "..." and @"..."@, which run. Unlike the Bash path, quoting is tracked, so a quoted ';' is a word.
+    """PowerShell words, with SEP, PIPE, OPEN, BRACE and CLOSE for separators, pipes and brackets, and the commands
+    inside $(...) in "..." and @"..."@, which run. Unlike the Bash path, quoting is tracked, so a quoted ';' is a word.
     Backtick escapes (also inside "..."), '' is a quote inside '...', a backslash is an ordinary character, a
     backtick at the end of a line continues it, and a here-string is one word."""
     out, inner, word, quoted, lead, i, closers, redirect = [], [], [], False, False, 0, {}, False
@@ -905,7 +918,7 @@ def ps_tokenize(cmd: str) -> tuple[list, list[str]]:
             end_word()
             redirect = False
             sep = c in ";&\n" or cmd.startswith("||", i)  # PowerShell 7's || runs the next command: it isn't a pipe
-            out.append(SEP if sep else PIPE if c == "|" else OPEN if c in "({" else CLOSE)
+            out.append(SEP if sep else PIPE if c == "|" else OPEN if c == "(" else BRACE if c == "{" else CLOSE)
             i += 2 if cmd.startswith("||", i) else 1
         else:
             word.append(c)
@@ -925,8 +938,9 @@ def strip_ps_assignment(seg: list[str]) -> tuple[list[str], list[str]]:
 
 
 def check_set_env(args: list[str]) -> str | None:
-    """Set-Item env:HUSKY 0 sets a variable, like $env:HUSKY = 0. The path and value come from -Path (or
-    -LiteralPath) and -Value, also written -Value:0, and otherwise from the first two other arguments."""
+    """Set-Item env:HUSKY 0 sets a variable, like $env:HUSKY = 0, and so does New-Item -Path Env: -Name HUSKY. The path
+    and value come from -Path (or -LiteralPath), -Name and -Value, also written -Value:0, and otherwise from the first
+    two other arguments. Other parameters take a value too (-Encoding utf8, -Filter *), except a few switches."""
     bound, positional, k = {}, [], 0
     while k < len(args):
         a, k = args[k], k + 1
@@ -934,13 +948,20 @@ def check_set_env(args: list[str]) -> str | None:
         name = name.lower()
         if a[:1] != "-" or not name:
             positional.append(a)
-        elif any(p.startswith(name) for p in ("path", "literalpath", "value")):
-            if not colon:
-                value, k = (args[k] if k < len(args) else ""), k + 1
-            bound["value" if "value".startswith(name) else "path"] = value
+            continue
+        slot = next((p for p in ("path", "literalpath", "value", "name") if p.startswith(name)), None)
+        if not slot and (any(p.startswith(name) for p in PS_SET_SWITCHES) or not re.fullmatch(r"[a-z]+", name)):
+            continue
+        if not colon:
+            value, k = (args[k] if k < len(args) else ""), k + 1
+        if slot:
+            bound["path" if slot == "literalpath" else slot] = value
     for slot, value in zip([p for p in ("path", "value") if p not in bound], positional):
         bound[slot] = value
-    m = re.fullmatch(r"env:[\\/]?(\w+)", bound.get("path", ""), re.I)
+    path = bound.get("path", "")
+    if "name" in bound:
+        path += ("" if path.endswith((":", "/", "\\")) else "/") + bound["name"]
+    m = re.fullmatch(r"env:[\\/]?(\w+)", path, re.I)
     if m and HOOK_SKIP_ENV.match(f"{m.group(1).upper()}={bound.get('value', '')}"):
         return f"Skipping git hooks via env:{m.group(1)} is forbidden."
     return None
@@ -972,9 +993,9 @@ def check_ps_segment(seg: list[str], state: dict, depth: int, stdin: bool = Fals
 
 def ps_command_word(words: list) -> bool:
     """Whether a group starting with these words holds a command (Join-Path, git, .\\build.ps1) rather than a value
-    ('x', $x, 1, -not $y)."""
+    ('x', $x, 1, -not $y, or what a keyword or echo outputs)."""
     return bool(words) and isinstance(words[0], str) and not isinstance(words[0], Quoted) and \
-        bool(re.match(r"[A-Za-z_.\\/]", words[0]))
+        bool(re.match(r"[A-Za-z_.\\/]", words[0])) and words[0].lower() not in PS_VALUE_LEADS
 
 
 def check_ps(cmd: str, depth: int, state: dict, stdin: bool = False) -> str | None:
@@ -993,17 +1014,53 @@ def check_ps(cmd: str, depth: int, state: dict, stdin: bool = False) -> str | No
     for grouping in (True, False):
         state.clear()
         state.update(start)
-        seg, piped, skip = [], False, 0
+        # values: for each open value group, [whether it's a ( ) group, whose ; and newlines separate values,
+        # whether its -words are operators (in an expression, ($a -join "`n"), up to its first ;), and the words of
+        # its statement after a ; or |, which can be a command: $(1; git push --force), checked on its own too].
+        # A { } block holds statements, which end the command as usual
+        seg, piped, skip, values, lead = [], False, 0, [], False
+
+        def add(word):
+            seg.append(word)
+            for v in values:
+                if v[2] is not None:
+                    v[2].append(word)
+
+        def statement_reason(v):
+            return check_ps_segment(v[2], state, depth, v[3] or stdin) if v[2] else None
+
         for n, t in enumerate(tokens + [None]):  # None ends the last command
+            opens = t is OPEN or t is BRACE
             if skip and t is not None:
-                skip += (t is OPEN) - (t is CLOSE)
-            elif not grouping and t is OPEN and ps_command_word(tokens[n + 1:n + 2]):
-                seg.append(SUBST)
+                skip += opens - (t is CLOSE)
+            elif not grouping and opens and ps_command_word(tokens[n + 1:n + 2]):
+                add(SUBST)
                 skip = 1
-            elif not grouping and (t is OPEN or t is CLOSE):
-                continue
+            elif not grouping and opens:
+                nxt = tokens[n + 1] if n + 1 < len(tokens) else None
+                lead = isinstance(nxt, str) and not isinstance(nxt, Quoted) and nxt.lower() in PS_VALUE_LEADS
+                if lead:  # it outputs what it echoes: its literals, and maybe more
+                    add(SUBST)
+                values.append([t is OPEN, t is OPEN and not lead, None, False])
+            elif not grouping and t is CLOSE:
+                reason = statement_reason(values[-1]) if values else None
+                if reason:
+                    return reason
+                values = values[:-1]
+            elif values and values[-1][0] and (t is SEP or t is PIPE):  # ('x'; '--force') outputs both
+                reason = statement_reason(values[-1])
+                if reason:
+                    return reason
+                values[-1][1:] = [False, [], t is PIPE]
             elif isinstance(t, str):
-                seg.append(t)
+                assign = values and values[-1][1] and not isinstance(t, Quoted) and PS_ASSIGN_WORD.fullmatch(t)
+                if lead:  # if, echo: not output
+                    lead = False
+                elif assign:  # ($o = git push --force) runs the command: no longer an expression, and checked too
+                    add(t)
+                    values[-1][1:] = [False, [assign.group(1)] if assign.group(1) else [], False]
+                elif not (values and values[-1][1] and t[:1] == "-" and not isinstance(t, Quoted)):
+                    add(t)
             else:
                 reason = check_ps_segment(seg, state, depth, piped or stdin) if seg else None
                 if reason:
