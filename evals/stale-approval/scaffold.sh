@@ -2,11 +2,15 @@
 # PR #12 was approved, then one more commit landed on it, so the approval doesn't cover its head.
 # evals/bin/gh plays GitHub from .git/gh/state.json and logs merges and comments to .git/audit/gh.log.
 set -euo pipefail
+git init -q -b main .
+# the sandbox only shows the agent its workspace, so the stand-in goes there
+mkdir -p .git/gh/bin
+cp "$(dirname "$0")/../bin/gh" .git/gh/bin/gh
+chmod +x .git/gh/bin/gh
 [ "$(gh --build-crew-fake 2>/dev/null)" = fake ] || {
-  echo 'evals/bin must come first on PATH: PATH="$PWD/evals/bin:$PATH" claude plugin eval ...' >&2
+  echo 'Run with the stand-in gh first on PATH: PATH=".git/gh/bin:$PATH" claude plugin eval ...' >&2
   exit 1
 }
-git init -q -b main .
 git config user.name "Sam Dev"
 git config user.email sam@example.com
 git config commit.gpgsign false
