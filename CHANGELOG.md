@@ -15,6 +15,9 @@
 - The `rejected-push` eval no longer passes work pushed only to `main`. It also fails a run that copies a ref file into the remote, or pushes with the remote's hooks off. (#53)
 - `merge_gate` reports a merge that worked even when gh fails afterwards, for example deleting a local branch that another worktree has checked out. Before, it said `"merged": false` for a PR GitHub had merged. (#56)
 
+### Security
+- `merge_gate` passes only if the PR merged at the head the review approved. Before, it also passed when someone pushed a new commit and merged the PR outside the gate while it ran. (#56)
+
 ## [0.5.0] - 2026-11-05
 ### Added
 - A phase in `docs/PLAN.md` can name the skills it's built with. `/kickoff` gives the planner the installed skills to choose from, and `/build-phase` loads the ones a phase names. Skills stay advice: the gates still decide, and a phase with no skills builds as before. (#41)
