@@ -21,8 +21,8 @@ jobs:
       run:
         shell: bash   # Git Bash on Windows, the shell Claude Code runs hooks and commands in there
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
       - run: pip install -r requirements-dev.txt
@@ -34,15 +34,15 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: shellcheck
         run: shellcheck install.sh uninstall.sh run.sh hooks/session_start.sh evals/*/scaffold.sh
 
   plugin:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Validate plugin manifest
