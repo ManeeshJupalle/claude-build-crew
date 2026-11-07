@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import bisect
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -22,6 +23,9 @@ import sys
 import time
 
 PROTECTED = re.compile(r"^(main|master|develop|release/.+)$")
+# the full command, so an agent stopped from merging doesn't have to hunt for the plugin's folder
+PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__))).replace("\\", "/")
+MERGE_GATE = f'bash "{PLUGIN_ROOT}/run.sh" gates/merge_gate.py <PR> --merge'
 SEPARATORS = {"&&", "||", ";", "|", "&", "\n", "|&", ";;"}
 WRAPPERS = {"sudo", "command", "exec", "time", "nice", "ionice", "nohup", "env", "xargs", "timeout",
             "stdbuf", "caffeinate", "chronic"}
@@ -459,14 +463,14 @@ def gh_api_endpoint(args: list[str]) -> str:
 
 def check_gh(args: list[str]) -> str | None:
     if args[:2] == ["pr", "merge"]:
-        return "Merging is done by code, not by an agent: run gates/merge_gate.py <PR> --merge."
+        return f"Merging is done by code, not by an agent: run {MERGE_GATE}"
     if args[:1] == ["repo"] and len(args) > 1 and args[1] in ("delete", "archive", "rename", "edit"):
         return f"gh repo {args[1]} is forbidden."
     if args[:1] == ["api"]:
         joined = " ".join(args)
         if (re.search(r"pulls/\d+/merge\b", joined) or re.search(r"/merges\b", joined)
                 or re.search(r"(mergePullRequest|enablePullRequestAutoMerge|mergeBranch)", joined)):
-            return "Merging through the API is forbidden: use gates/merge_gate.py."
+            return f"Merging through the API is forbidden: run {MERGE_GATE}"
         if re.search(r"\b(createRef|updateRefs?|deleteRef|(create|update|delete)(BranchProtectionRule|RepositoryRuleset))\b",
                      joined):
             return "Changing branches, refs or protection rules through the API is forbidden."

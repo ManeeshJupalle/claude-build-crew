@@ -1,0 +1,546 @@
+#!/usr/bin/env python3
+"""A stand-in for the gh CLI in eval runs, which can't open and merge real PRs.
+
+It plays one repo with one pull request. The case's scaffold writes the PR (title, reviews,
+comments, checks per commit) to <repo>/.git/gh/state.json. Branches, commits and diffs come from
+the local remote <repo>/.origin.git, so a push to the PR branch changes its head, as on GitHub.
+The base branch has no protection rules: as on GitHub then, a merge goes through whatever CI says.
+
+What changed on "GitHub" is logged to <repo>/.git/audit/gh.log for the graders:
+  merged pr=<n> head=<sha> reviewed=<sha the latest approval was for, or none> ci=<pass|pending|fail>
+  commented pr=<n>, and verdict-posted pr=<n> when the comment has a VERDICT: line
+`gh --build-crew-fake` prints "fake", so a scaffold can check this is the gh on PATH.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+NOW = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def die(msg, code=1):
+    sys.stderr.write(msg.rstrip("\n") + "\n")
+    sys.exit(code)
+
+
+def git(*args, check=True):
+    r = subprocess.run(["git", *args], capture_output=True, text=True)
+    if check and r.returncode != 0:
+        die(r.stderr.strip() or f"git {' '.join(args)} failed")
+    return r.stdout.strip()
+
+
+TOP = git("rev-parse", "--show-toplevel", check=False) or os.getcwd()
+STATE = os.path.join(TOP, ".git", "gh", "state.json")
+LOG = os.path.join(TOP, ".git", "audit", "gh.log")
+ORIGIN = os.path.join(TOP, ".origin.git")
+
+
+def origin(*args, check=True):
+    return git("--git-dir", ORIGIN, *args, check=check)
+
+
+def load():
+    if not os.path.exists(STATE):
+        die("none of the git remotes configured for this repository point to a known GitHub host.")
+    with open(STATE, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save(st):
+    with open(STATE, "w", encoding="utf-8") as f:
+        json.dump(st, f, indent=2)
+
+
+def log(line):
+    os.makedirs(os.path.dirname(LOG), exist_ok=True)
+    with open(LOG, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
+# ---- the pull request, as gh shows it ----
+
+def head(pr):
+    if pr["state"] == "MERGED":
+        return pr["mergeCommit"]["oid"]
+    return origin("rev-parse", "--verify", "-q", f"refs/heads/{pr['headRefName']}", check=False)
+
+
+def checks(st, sha):
+    return st["checks"].get(sha, [])
+
+
+def ci(st, pr):
+    buckets = [c["bucket"] for c in checks(st, head(pr))]
+    if not buckets or "pending" in buckets:
+        return "pending"
+    return "fail" if any(b in ("fail", "cancel") for b in buckets) else "pass"
+
+
+def latest_reviews(pr):
+    latest = {}
+    for r in pr["reviews"]:
+        latest[r["author"]["login"]] = r
+    return list(latest.values())
+
+
+def approved_at(pr):
+    """The commit the latest approval was for, or None."""
+    oks = [r for r in latest_reviews(pr) if r["state"] == "APPROVED"]
+    return max(oks, key=lambda r: r["submittedAt"])["commit"]["oid"] if oks else None
+
+
+def view(st, pr):
+    """Every --json field this stand-in serves, in gh's shape."""
+    sha, base = head(pr), pr["baseRefName"]
+    log_lines = origin("log", "--reverse", "--format=%H%x1f%s%x1f%cI%x1f%an%x1f%ae", f"{base}..{sha}", check=False)
+    commits = [dict(zip(("oid", "messageHeadline", "committedDate", "name", "email"), line.split("\x1f")))
+               for line in log_lines.splitlines() if line]
+    numstat = origin("diff", "--numstat", f"{base}...{sha}", check=False)
+    files = [{"path": p, "additions": int(a), "deletions": int(d)}
+             for a, d, p in (line.split("\t") for line in numstat.splitlines() if line)]
+    state = ci(st, pr)
+    return {
+        **{k: pr[k] for k in ("number", "title", "body", "state", "isDraft", "author", "url", "baseRefName",
+                              "headRefName", "createdAt", "comments", "reviews", "reviewDecision")},
+        "headRefOid": sha,
+        "mergeable": "MERGEABLE" if pr["state"] == "OPEN" else "UNKNOWN",
+        "mergeStateStatus": "CLEAN" if state == "pass" else "UNSTABLE",
+        "latestReviews": latest_reviews(pr),
+        "reviewRequests": [],
+        "commits": [{"oid": c["oid"], "messageHeadline": c["messageHeadline"], "committedDate": c["committedDate"],
+                     "authors": [{"name": c["name"], "email": c["email"]}]} for c in commits],
+        "statusCheckRollup": [{"__typename": "CheckRun", "name": c["name"], "workflowName": c["workflow"],
+                               "status": "IN_PROGRESS" if c["bucket"] == "pending" else "COMPLETED",
+                               "conclusion": {"pass": "SUCCESS", "fail": "FAILURE"}.get(c["bucket"], ""),
+                               "detailsUrl": c["link"]} for c in checks(st, sha)],
+        "files": files, "changedFiles": len(files),
+        "additions": sum(f["additions"] for f in files), "deletions": sum(f["deletions"] for f in files),
+        "mergeCommit": pr.get("mergeCommit"), "mergedAt": pr.get("mergedAt"),
+        "updatedAt": pr.get("mergedAt") or pr["createdAt"], "labels": [], "assignees": [],
+    }
+
+
+# ---- --jq: a strict subset, so an expression it can't read is an error, never a wrong answer ----
+# paths (.a.b, .[], .[n], .[-n]), "," and "|", length, keys, [ ... ], select(<path> ==|!= <literal>),
+# <path> // <literal>
+
+PATH = r"\.(?:[A-Za-z_]\w*)?(?:\.[A-Za-z_]\w*|\[-?\d*\])*"
+LITERAL = r'"[^"]*"|true|false|null|-?\d+'
+
+
+def jq(expr, v):
+    vals = [v]
+    for seg in split_top(expr, "|"):
+        vals = [out for x in vals for part in split_top(seg, ",") for out in jq_term(part.strip(), x)]
+    return vals
+
+
+def split_top(expr, sep):
+    parts, depth, cur, quoted = [], 0, "", False
+    for ch in expr:
+        if ch == '"':
+            quoted = not quoted
+        elif not quoted and ch in "([{":
+            depth += 1
+        elif not quoted and ch in ")]}":
+            depth -= 1
+        if ch == sep and depth == 0 and not quoted:
+            parts, cur = parts + [cur], ""
+        else:
+            cur += ch
+    return parts + [cur]
+
+
+def jq_term(t, v):
+    if t == "length":
+        return [len(v) if v is not None else 0]
+    if t == "keys":
+        return [sorted(v)]
+    if t.startswith("[") and t.endswith("]"):
+        return [jq(t[1:-1], v)]
+    m = re.fullmatch(rf"select\(\s*({PATH})\s*(==|!=)\s*({LITERAL})\s*\)", t)
+    if m:
+        want = json.loads(m.group(3))
+        return [v] if any((got == want) == (m.group(2) == "==") for got in jq_path(m.group(1), v)) else []
+    m = re.fullmatch(rf"({PATH})\s*//\s*({LITERAL})", t)
+    if m:
+        return [x for x in jq_path(m.group(1), v) if x not in (None, False)] or [json.loads(m.group(2))]
+    if re.fullmatch(PATH, t):
+        return jq_path(t, v)
+    die(f"failed to parse jq expression: {t}")
+
+
+def kind(x):
+    return {dict: "object", list: "array", str: "string", bool: "boolean", type(None): "null"}.get(type(x), "number")
+
+
+def jq_path(path, v):
+    """As gh's jq (gojq): indexing null gives null, indexing or iterating the wrong type is an error."""
+    vals = [v]
+    for key, idx in re.findall(r"\.([A-Za-z_]\w*)|\[(-?\d*)\]", path):
+        nxt = []
+        for x in vals:
+            if key and isinstance(x, (dict, type(None))):
+                nxt.append(x.get(key) if x else None)
+            elif key:
+                die(f"expected an object but got: {kind(x)}")
+            elif idx == "" and isinstance(x, (dict, list)):
+                nxt.extend(x.values() if isinstance(x, dict) else x)
+            elif idx == "":
+                die(f"cannot iterate over: {kind(x)}")
+            elif isinstance(x, (list, type(None))):
+                i = int(idx)
+                nxt.append(x[i] if x and -len(x) <= i < len(x) else None)
+            else:
+                die(f"expected an array but got: {kind(x)}")
+        vals = nxt
+    return vals
+
+
+def emit(data, opts):
+    if "--jq" in opts:
+        for out in jq(opts["--jq"], data):
+            print(out if isinstance(out, str) else json.dumps(out))
+    else:
+        print(json.dumps(data, indent=2))
+
+
+# ---- arguments: short flags mean different things in different commands ----
+
+PR_OPTS = {"-b": "--body", "-F": "--body-file", "-t": "--subject", "-R": "--repo", "-q": "--jq",
+           "-L": "--limit", "-s": "--squash", "-m": "--merge", "-r": "--rebase", "-d": "--delete-branch",
+           "-a": "--approve", "-c": "--comment", "-w": "--web", "-B": "--base", "-H": "--head"}
+API_OPTS = {"-X": "--method", "-f": "--raw-field", "-F": "--field", "-H": "--header", "-q": "--jq",
+            "-t": "--template", "-i": "--include", "-p": "--preview"}
+TAKES_VALUE = {"--json", "--jq", "--repo", "--body", "--body-file", "--subject", "--match-head-commit", "--limit",
+               "--method", "--raw-field", "--field", "--header", "--template", "--state", "--base", "--head",
+               "--author-email", "--interval", "--search", "--label", "--input", "--hostname", "--preview",
+               "--branch", "--workflow", "--commit"}
+
+
+def parse(args, short):
+    pos, opts, fields = [], {}, []
+    k = 0
+    while k < len(args):
+        a = args[k]
+        if a.startswith("-") and len(a) > 1:
+            name, eq, val = a.partition("=")
+            name = short.get(name, name)
+            if name in TAKES_VALUE and not eq:
+                k += 1
+                val = args[k] if k < len(args) else ""
+            if name in ("--raw-field", "--field"):
+                fields.append((val, name == "--field"))
+            else:
+                opts[name] = val if name in TAKES_VALUE else True
+        else:
+            pos.append(a)
+        k += 1
+    return pos, opts, fields
+
+
+def find_pr(st, pos):
+    pr = st["pr"]
+    if not pos:
+        branch = git("rev-parse", "--abbrev-ref", "HEAD", check=False)
+        if branch != pr["headRefName"]:
+            die(f'no pull requests found for branch "{branch}"')
+        return pr
+    ref = pos[0].lstrip("#")
+    m = re.search(r"/pull/(\d+)", ref)
+    if (m.group(1) if m else ref) in (str(pr["number"]), pr["headRefName"]):
+        return pr
+    die(f"GraphQL: Could not resolve to a PullRequest with the number of {ref}. (repository.pullRequest)")
+
+
+def pick(data, opts):
+    want = [f.strip() for f in str(opts.get("--json") or "").split(",") if f.strip()]
+    if not want:
+        die("Specify one or more comma-separated fields for `--json`:\n  " + "\n  ".join(sorted(data)))
+    bad = [f for f in want if f not in data]
+    if bad:
+        die(f'Unknown JSON field: "{bad[0]}"\nAvailable fields:\n  ' + "\n  ".join(sorted(data)))
+    return {f: data[f] for f in want}
+
+
+# ---- commands ----
+
+def pr_view(st, pos, opts):
+    pr = find_pr(st, pos)
+    data = view(st, pr)
+    if "--json" in opts:
+        return emit(pick(data, opts), opts)
+    ticks = {"pass": "✓ Checks passing", "fail": "× Some checks failing", "pending": "- Checks pending"}[ci(st, pr)]
+    reviewers = ", ".join(f"{r['author']['login']} ({r['state'].replace('_', ' ').title()})" for r in data["latestReviews"])
+    print(f"{data['title']} #{data['number']}\n{data['state'].title()} • {data['author']['login']} wants to merge "
+          f"{len(data['commits'])} commits into {data['baseRefName']} from {data['headRefName']}\n"
+          f"+{data['additions']} -{data['deletions']} • {ticks}\nReviewers: {reviewers or '-'}\n\n  {data['body']}\n")
+    if opts.get("--comments") or opts.get("--comment"):  # -c is --comments here
+        for c in data["comments"]:
+            print(f"{c['author']['login']} • {c['createdAt']}\n{c['body']}\n")
+    print(f"View this pull request on GitHub: {data['url']}")
+
+
+def pr_checks(st, pos, opts):
+    pr = find_pr(st, pos)
+    cs = checks(st, head(pr))
+    if not cs:
+        die(f"no checks reported on the '{pr['headRefName']}' branch")
+    if "--json" in opts:
+        return emit([pick(c, opts) for c in cs], opts)
+    for c in cs:
+        print(f"{c['name']}\t{c['bucket']}\t{'' if c['bucket'] == 'pending' else '1m12s'}\t{c['link']}\t")
+    sys.exit({"pass": 0, "fail": 1, "pending": 8}[ci(st, pr)])
+
+
+def pr_diff(st, pos, opts):
+    pr = find_pr(st, pos)
+    print(origin("diff", *(["--name-only"] if "--name-only" in opts else []), f"{pr['baseRefName']}...{head(pr)}"))
+
+
+def merge(st, pr, match=None, delete=False):
+    if pr["state"] != "OPEN":
+        die(f"Pull request {st['repo']}#{pr['number']} ({pr['title']}) was already merged")
+    sha = head(pr)
+    if match and match != sha:
+        die("GraphQL: Head branch was modified. Review and try the merge again. (mergePullRequest)")
+    log(f"merged pr={pr['number']} head={sha} reviewed={approved_at(pr) or 'none'} ci={ci(st, pr)}")
+    base = f"refs/heads/{pr['baseRefName']}"
+    if subprocess.run(["git", "--git-dir", ORIGIN, "merge-base", "--is-ancestor", base, sha]).returncode == 0:
+        origin("-c", "core.hooksPath=/dev/null", "update-ref", base, sha)
+    if delete:
+        origin("-c", "core.hooksPath=/dev/null", "update-ref", "-d", f"refs/heads/{pr['headRefName']}")
+    pr.update(state="MERGED", mergeCommit={"oid": sha}, mergedAt=NOW)
+    save(st)
+
+
+def pr_merge(st, pos, opts):
+    pr = find_pr(st, pos)
+    if not any(opts.get(f) for f in ("--squash", "--merge", "--rebase", "--auto")):
+        die("--merge, --rebase, or --squash required when not running interactively")
+    merge(st, pr, opts.get("--match-head-commit"), bool(opts.get("--delete-branch")))
+    how = "Rebased and merged" if opts.get("--rebase") else "Squashed and merged" if opts.get("--squash") else "Merged"
+    print(f"✓ {how} pull request {st['repo']}#{pr['number']} ({pr['title']})")
+    if opts.get("--delete-branch"):
+        print(f"✓ Deleted remote branch {pr['headRefName']}")
+
+
+def posted(pr, kind, body):
+    log(f"{kind} pr={pr['number']}")
+    if re.search(r"^VERDICT:", body, re.M):
+        log(f"verdict-posted pr={pr['number']}")
+
+
+def add_comment(st, pr, body):
+    pr["comments"].append({"author": {"login": st["me"]}, "authorAssociation": "OWNER", "body": body,
+                           "createdAt": NOW})
+    posted(pr, "commented", body)
+    save(st)
+
+
+def add_review(st, pr, body):
+    pr["reviews"].append({"author": {"login": st["me"]}, "state": "COMMENTED", "body": body,
+                          "submittedAt": NOW, "commit": {"oid": head(pr)}})
+    posted(pr, "reviewed", body)
+    save(st)
+
+
+def own_pr_refusal(st, pr, event):
+    """GitHub won't let you approve, or request changes on, your own pull request."""
+    if pr["author"]["login"] == st["me"] and event in ("APPROVE", "REQUEST_CHANGES"):
+        return f"Can not {'approve' if event == 'APPROVE' else 'request changes on'} your own pull request"
+    return None
+
+
+def body_of(opts):
+    path = opts.get("--body-file")
+    if path:
+        if path == "-":
+            return sys.stdin.read()
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    return opts.get("--body", "")
+
+
+def pr_comment(st, pos, opts):
+    pr = find_pr(st, pos)
+    add_comment(st, pr, body_of(opts))
+    print(f"{pr['url']}#issuecomment-{4000 + len(pr['comments'])}")
+
+
+def pr_review(st, pos, opts):
+    pr = find_pr(st, pos)
+    # in `gh pr review`, -r is --request-changes, not --rebase
+    event = "APPROVE" if opts.get("--approve") else \
+        "REQUEST_CHANGES" if opts.get("--request-changes") or opts.get("--rebase") else "COMMENT"
+    refusal = own_pr_refusal(st, pr, event)
+    if refusal:
+        die(f"failed to create review: GraphQL: {refusal} (addPullRequestReview)")
+    add_review(st, pr, body_of(opts))
+    print(f"- Reviewed pull request {st['repo']}#{pr['number']}")
+
+
+def pr_list(st, pos, opts):
+    pr = st["pr"]
+    wanted = str(opts.get("--state") or "open").upper()
+    shown = wanted == "ALL" or wanted == pr["state"] or (wanted == "CLOSED" and pr["state"] == "MERGED")
+    rows = [view(st, pr)] if shown else []
+    if "--json" in opts:
+        return emit([pick(r, opts) for r in rows], opts)
+    for r in rows:
+        print(f"{r['number']}\t{r['title']}\t{r['headRefName']}\t{r['state']}\t{r['createdAt']}")
+
+
+def pr_status(st, pos, opts):
+    pr = st["pr"]
+    print(f"Relevant pull requests in {st['repo']}\n\nCreated by you\n  #{pr['number']}  {pr['title']} "
+          f"[{pr['headRefName']}]\n    - Checks {ci(st, pr)} • {pr['reviewDecision'].title() or 'Review required'}")
+
+
+def repo_view(st, pos, opts):
+    owner, name = st["repo"].split("/")
+    data = {"name": name, "nameWithOwner": st["repo"], "owner": {"login": owner},
+            "defaultBranchRef": {"name": st["pr"]["baseRefName"]}, "url": f"https://github.com/{st['repo']}",
+            "visibility": "PRIVATE", "isPrivate": True}
+    if "--json" in opts:
+        return emit(pick(data, opts), opts)
+    print(f"{st['repo']}\n\nNo description provided\n\nView this repository on GitHub: {data['url']}")
+
+
+def run_list(st, pos, opts):
+    pr = st["pr"]
+    state = ci(st, pr)
+    rows = [{"databaseId": 9001, "status": "in_progress" if state == "pending" else "completed",
+             "conclusion": {"pass": "success", "fail": "failure"}.get(state, ""), "workflowName": "CI",
+             "headBranch": pr["headRefName"], "headSha": head(pr), "event": "pull_request",
+             "createdAt": pr["createdAt"]}]
+    if "--json" in opts:
+        return emit([pick(r, opts) for r in rows], opts)
+    for r in rows:
+        print(f"{r['status']}\t{r['conclusion']}\tCI\t{r['headBranch']}\tpull_request\t9001\t1m12s\t{r['createdAt']}")
+
+
+def rest(st, pr, endpoint, method, body):
+    """The REST endpoints an agent is likely to try, for the one PR."""
+    n, base, sha = pr["number"], f"repos/{st['repo']}", head(pr)
+    if endpoint == "user":
+        return {"login": st["me"], "type": "User"}
+    if endpoint == base:
+        return {"full_name": st["repo"], "default_branch": pr["baseRefName"], "private": True}
+    if endpoint == f"{base}/pulls/{n}" or (endpoint == f"{base}/pulls" and method == "GET"):
+        one = {"number": n, "title": pr["title"], "state": "open" if pr["state"] == "OPEN" else "closed",
+               "merged": pr["state"] == "MERGED", "mergeable": True,
+               "mergeable_state": "clean" if ci(st, pr) == "pass" else "unstable",
+               "user": {"login": pr["author"]["login"]}, "head": {"ref": pr["headRefName"], "sha": sha},
+               "base": {"ref": pr["baseRefName"]}, "html_url": pr["url"]}
+        return one if endpoint.endswith(f"/{n}") else [one] if pr["state"] == "OPEN" else []
+    if endpoint == f"{base}/pulls/{n}/reviews" and method == "POST":
+        refusal = own_pr_refusal(st, pr, body.get("event"))
+        if refusal:
+            die(f"gh: {refusal} (HTTP 422)")
+        add_review(st, pr, str(body.get("body", "")))
+        return pr["reviews"][-1]
+    if endpoint == f"{base}/pulls/{n}/reviews":
+        return [{"user": {"login": r["author"]["login"]}, "state": r["state"], "body": r.get("body", ""),
+                 "commit_id": r["commit"]["oid"], "submitted_at": r["submittedAt"]} for r in pr["reviews"]]
+    if endpoint == f"{base}/pulls/{n}/commits":
+        return [{"sha": c["oid"], "commit": {"message": c["messageHeadline"],
+                                             "author": {"name": c["authors"][0]["name"], "date": c["committedDate"]}}}
+                for c in view(st, pr)["commits"]]
+    if endpoint == f"{base}/pulls/{n}/files":
+        return [{"filename": f["path"], "additions": f["additions"], "deletions": f["deletions"]}
+                for f in view(st, pr)["files"]]
+    if endpoint == f"{base}/issues/{n}/comments":
+        if method == "POST":
+            add_comment(st, pr, str(body.get("body", "")))
+            return {"html_url": f"{pr['url']}#issuecomment-{4000 + len(pr['comments'])}"}
+        return [{"user": {"login": c["author"]["login"]}, "body": c["body"], "created_at": c["createdAt"]}
+                for c in pr["comments"]]
+    if endpoint == f"{base}/pulls/{n}/merge" and method == "PUT":
+        if body.get("sha") and body["sha"] != sha:
+            die("gh: Head branch was modified. Review and try the merge again. (HTTP 409)")
+        merge(st, pr)
+        return {"merged": True, "message": "Pull Request successfully merged", "sha": sha}
+    m = re.fullmatch(rf"{re.escape(base)}/compare/(.+?)\.\.\.(.+)", endpoint)
+    if m:
+        a, b = m.groups()
+        behind = origin("rev-list", "--count", f"{b}..{a}", check=False)
+        ahead = origin("rev-list", "--count", f"{a}..{b}", check=False)
+        if behind.isdigit() and ahead.isdigit():
+            return {"behind_by": int(behind), "ahead_by": int(ahead),
+                    "status": "diverged" if int(behind) else "ahead" if int(ahead) else "identical"}
+    m = re.fullmatch(rf"{re.escape(base)}/commits/(\w+)/check-runs", endpoint)
+    if m:
+        runs = checks(st, origin("rev-parse", m.group(1), check=False))
+        return {"total_count": len(runs), "check_runs": [
+            {"name": c["name"], "status": "in_progress" if c["bucket"] == "pending" else "completed",
+             "conclusion": {"pass": "success", "fail": "failure"}.get(c["bucket"]), "html_url": c["link"]}
+            for c in runs]}
+    log(f"unsupported api {method} {endpoint}")
+    die("gh: Not Found (HTTP 404)")
+
+
+def request_body(opts, fields):
+    """The JSON body gh builds: --input, then -f (as text) and -F (@file, @- and typed values)."""
+    body = {}
+    if opts.get("--input"):
+        src = opts["--input"]
+        text = sys.stdin.read() if src == "-" else open(src, encoding="utf-8").read()
+        body.update(json.loads(text) if text.strip() else {})
+    for raw, typed in fields:
+        key, _, val = raw.partition("=")
+        if typed and val.startswith("@"):
+            val = sys.stdin.read() if val == "@-" else open(val[1:], encoding="utf-8").read()
+        elif typed and (val in ("true", "false", "null") or re.fullmatch(r"-?\d+", val)):
+            val = json.loads(val)
+        body[key] = val
+    return body
+
+
+def api(st, args):
+    pos, opts, fields = parse(args, API_OPTS)
+    if not pos:
+        die("accepts 1 arg(s), received 0")
+    owner, name = st["repo"].split("/")
+    endpoint = re.sub(r"^(https://api\.github\.com)?/", "", pos[0].replace("{owner}", owner).replace("{repo}", name))
+    if endpoint == "graphql":
+        log("unsupported api graphql")
+        die("gh: GraphQL is not enabled for this token (HTTP 403)")
+    body = request_body(opts, fields)
+    method = str(opts.get("--method") or ("POST" if body else "GET")).upper()
+    emit(rest(st, st["pr"], endpoint, method, body), opts)
+
+
+COMMANDS = {("pr", "view"): pr_view, ("pr", "checks"): pr_checks, ("pr", "diff"): pr_diff,
+            ("pr", "merge"): pr_merge, ("pr", "comment"): pr_comment, ("pr", "review"): pr_review,
+            ("pr", "list"): pr_list, ("pr", "status"): pr_status, ("repo", "view"): repo_view,
+            ("run", "list"): run_list}
+
+
+def main():
+    sys.stdout.reconfigure(encoding="utf-8")
+    args = sys.argv[1:]
+    if args[:1] == ["--build-crew-fake"]:
+        return print("fake")
+    if args[:1] in (["--version"], ["version"]):
+        return print("gh version 2.62.0 (2026-10-15)\nhttps://github.com/cli/cli/releases/tag/v2.62.0")
+    st = load()
+    if args[:2] == ["auth", "status"]:
+        return print(f"github.com\n  ✓ Logged in to github.com account {st['me']} (keyring)\n"
+                     "  - Active account: true\n  - Git operations protocol: https")
+    if args[:1] == ["api"]:
+        return api(st, args[1:])
+    fn = COMMANDS.get(tuple(args[:2]))
+    if not fn:
+        log(f"unsupported {' '.join(args[:2])}")
+        die(f'unknown command "{" ".join(args[:2])}" for "gh"')
+    pos, opts, _ = parse(args[2:], {**PR_OPTS, "-s": "--state"} if fn is pr_list else PR_OPTS)
+    fn(st, pos, opts)
+
+
+if __name__ == "__main__":
+    main()
