@@ -555,6 +555,13 @@ def test_blocks_what_it_cannot_parse(tool, cmd, feature_repo):
     assert res.returncode == 2 and b"Could not parse" in res.stderr
 
 
+@pytest.mark.parametrize("cmd", ["gh pr merge 12 --squash", "gh api -X PUT repos/o/r/pulls/12/merge"])
+def test_merge_block_gives_the_full_gate_command(cmd, feature_repo):
+    res = run_guard(cmd, cwd=feature_repo)
+    m = re.search(r'run bash "([^"]+)/run\.sh" gates/merge_gate\.py <PR> --merge', res.stderr.decode())
+    assert res.returncode == 2 and m and os.path.isfile(os.path.join(m.group(1), "gates", "merge_gate.py"))
+
+
 def test_powershell_tracks_branch(repo):
     assert guard("git commit -m x", tool="PowerShell", cwd=repo) == 2  # on main
     assert guard("git switch -c feat/y; if ($?) { git commit -m 'feat: y' }", tool="PowerShell", cwd=repo) == 0
