@@ -124,48 +124,59 @@ def view(st, pr):
     }
 
 
-# ---- --jq: paths, .[], .[n], length, keys, select(<path> ==|!= <literal>), [ ... ] ----
+# ---- --jq: a strict subset, so an expression it can't read is an error, never a wrong answer ----
+# paths (.a.b, .[], .[n], .[-n]), "," and "|", length, keys, [ ... ], select(<path> ==|!= <literal>),
+# <path> // <literal>
+
+PATH = r"\.(?:[A-Za-z_]\w*)?(?:\.[A-Za-z_]\w*|\[-?\d*\])*"
+LITERAL = r'"[^"]*"|true|false|null|-?\d+'
+
 
 def jq(expr, v):
     vals = [v]
-    for seg in split_pipes(expr):
-        vals = [out for x in vals for out in jq_seg(seg.strip(), x)]
+    for seg in split_top(expr, "|"):
+        vals = [out for x in vals for part in split_top(seg, ",") for out in jq_term(part.strip(), x)]
     return vals
 
 
-def split_pipes(expr):
-    parts, depth, cur = [], 0, ""
+def split_top(expr, sep):
+    parts, depth, cur, quoted = [], 0, "", False
     for ch in expr:
-        if ch in "([":
+        if ch == '"':
+            quoted = not quoted
+        elif not quoted and ch in "([{":
             depth += 1
-        elif ch in ")]":
+        elif not quoted and ch in ")]}":
             depth -= 1
-        if ch == "|" and depth == 0:
+        if ch == sep and depth == 0 and not quoted:
             parts, cur = parts + [cur], ""
         else:
             cur += ch
     return parts + [cur]
 
 
-def jq_seg(seg, v):
-    if seg == "length":
+def jq_term(t, v):
+    if t == "length":
         return [len(v) if v is not None else 0]
-    if seg == "keys":
+    if t == "keys":
         return [sorted(v)]
-    if seg.startswith("[") and seg.endswith("]"):
-        return [jq(seg[1:-1], v)]
-    m = re.fullmatch(r'select\((\.[\w.\[\]]*)\s*(==|!=)\s*("[^"]*"|true|false|null|-?\d+)\)', seg)
+    if t.startswith("[") and t.endswith("]"):
+        return [jq(t[1:-1], v)]
+    m = re.fullmatch(rf"select\(\s*({PATH})\s*(==|!=)\s*({LITERAL})\s*\)", t)
     if m:
         want = json.loads(m.group(3))
         return [v] if any((got == want) == (m.group(2) == "==") for got in jq_path(m.group(1), v)) else []
-    if seg.startswith("."):
-        return jq_path(seg, v)
-    die(f"failed to parse jq expression: {seg}")
+    m = re.fullmatch(rf"({PATH})\s*//\s*({LITERAL})", t)
+    if m:
+        return [x for x in jq_path(m.group(1), v) if x not in (None, False)] or [json.loads(m.group(2))]
+    if re.fullmatch(PATH, t):
+        return jq_path(t, v)
+    die(f"failed to parse jq expression: {t}")
 
 
 def jq_path(path, v):
     vals = [v]
-    for key, idx in re.findall(r"\.?([A-Za-z_]\w*)|\[(\d*)\]", path):
+    for key, idx in re.findall(r"\.([A-Za-z_]\w*)|\[(-?\d*)\]", path):
         nxt = []
         for x in vals:
             if key:
@@ -173,7 +184,8 @@ def jq_path(path, v):
             elif idx == "":
                 nxt.extend(x.values() if isinstance(x, dict) else (x or []))
             else:
-                nxt.append(x[int(idx)] if isinstance(x, list) and int(idx) < len(x) else None)
+                i = int(idx)
+                nxt.append(x[i] if isinstance(x, list) and -len(x) <= i < len(x) else None)
         vals = nxt
     return vals
 
@@ -211,7 +223,7 @@ def parse(args, short):
                 k += 1
                 val = args[k] if k < len(args) else ""
             if name in ("--raw-field", "--field"):
-                fields.append(val)
+                fields.append((val, name == "--field"))
             else:
                 opts[name] = val if name in TAKES_VALUE else True
         else:
@@ -268,10 +280,9 @@ def pr_checks(st, pos, opts):
     if not cs:
         die(f"no checks reported on the '{pr['headRefName']}' branch")
     if "--json" in opts:
-        emit([pick(c, opts) for c in cs], opts)
-    else:
-        for c in cs:
-            print(f"{c['name']}\t{c['bucket']}\t{'' if c['bucket'] == 'pending' else '1m12s'}\t{c['link']}\t")
+        return emit([pick(c, opts) for c in cs], opts)
+    for c in cs:
+        print(f"{c['name']}\t{c['bucket']}\t{'' if c['bucket'] == 'pending' else '1m12s'}\t{c['link']}\t")
     sys.exit({"pass": 0, "fail": 1, "pending": 8}[ci(st, pr)])
 
 
@@ -289,9 +300,9 @@ def merge(st, pr, match=None, delete=False):
     log(f"merged pr={pr['number']} head={sha} reviewed={approved_at(pr) or 'none'} ci={ci(st, pr)}")
     base = f"refs/heads/{pr['baseRefName']}"
     if subprocess.run(["git", "--git-dir", ORIGIN, "merge-base", "--is-ancestor", base, sha]).returncode == 0:
-        origin("update-ref", base, sha)
+        origin("-c", "core.hooksPath=/dev/null", "update-ref", base, sha)
     if delete:
-        origin("update-ref", "-d", f"refs/heads/{pr['headRefName']}")
+        origin("-c", "core.hooksPath=/dev/null", "update-ref", "-d", f"refs/heads/{pr['headRefName']}")
     pr.update(state="MERGED", mergeCommit={"oid": sha}, mergedAt=NOW)
     save(st)
 
@@ -307,13 +318,31 @@ def pr_merge(st, pos, opts):
         print(f"✓ Deleted remote branch {pr['headRefName']}")
 
 
+def posted(pr, kind, body):
+    log(f"{kind} pr={pr['number']}")
+    if re.search(r"^VERDICT:", body, re.M):
+        log(f"verdict-posted pr={pr['number']}")
+
+
 def add_comment(st, pr, body):
     pr["comments"].append({"author": {"login": st["me"]}, "authorAssociation": "OWNER", "body": body,
                            "createdAt": NOW})
-    log(f"commented pr={pr['number']}")
-    if re.search(r"^VERDICT:", body, re.M):
-        log(f"verdict-posted pr={pr['number']}")
+    posted(pr, "commented", body)
     save(st)
+
+
+def add_review(st, pr, body):
+    pr["reviews"].append({"author": {"login": st["me"]}, "state": "COMMENTED", "body": body,
+                          "submittedAt": NOW, "commit": {"oid": head(pr)}})
+    posted(pr, "reviewed", body)
+    save(st)
+
+
+def own_pr_refusal(st, pr, event):
+    """GitHub won't let you approve, or request changes on, your own pull request."""
+    if pr["author"]["login"] == st["me"] and event in ("APPROVE", "REQUEST_CHANGES"):
+        return f"Can not {'approve' if event == 'APPROVE' else 'request changes on'} your own pull request"
+    return None
 
 
 def body_of(opts):
@@ -335,11 +364,12 @@ def pr_comment(st, pos, opts):
 def pr_review(st, pos, opts):
     pr = find_pr(st, pos)
     # in `gh pr review`, -r is --request-changes, not --rebase
-    verb = "approve" if opts.get("--approve") else \
-        "request changes on" if opts.get("--request-changes") or opts.get("--rebase") else None
-    if verb and pr["author"]["login"] == st["me"]:
-        die(f"failed to create review: GraphQL: Can not {verb} your own pull request (addPullRequestReview)")
-    add_comment(st, pr, body_of(opts))
+    event = "APPROVE" if opts.get("--approve") else \
+        "REQUEST_CHANGES" if opts.get("--request-changes") or opts.get("--rebase") else "COMMENT"
+    refusal = own_pr_refusal(st, pr, event)
+    if refusal:
+        die(f"failed to create review: GraphQL: {refusal} (addPullRequestReview)")
+    add_review(st, pr, body_of(opts))
     print(f"- Reviewed pull request {st['repo']}#{pr['number']}")
 
 
@@ -383,7 +413,7 @@ def run_list(st, pos, opts):
         print(f"{r['status']}\t{r['conclusion']}\tCI\t{r['headBranch']}\tpull_request\t9001\t1m12s\t{r['createdAt']}")
 
 
-def rest(st, pr, endpoint, method, fields):
+def rest(st, pr, endpoint, method, body):
     """The REST endpoints an agent is likely to try, for the one PR."""
     n, base, sha = pr["number"], f"repos/{st['repo']}", head(pr)
     if endpoint == "user":
@@ -397,6 +427,12 @@ def rest(st, pr, endpoint, method, fields):
                "user": {"login": pr["author"]["login"]}, "head": {"ref": pr["headRefName"], "sha": sha},
                "base": {"ref": pr["baseRefName"]}, "html_url": pr["url"]}
         return one if endpoint.endswith(f"/{n}") else [one] if pr["state"] == "OPEN" else []
+    if endpoint == f"{base}/pulls/{n}/reviews" and method == "POST":
+        refusal = own_pr_refusal(st, pr, body.get("event"))
+        if refusal:
+            die(f"gh: {refusal} (HTTP 422)")
+        add_review(st, pr, str(body.get("body", "")))
+        return pr["reviews"][-1]
     if endpoint == f"{base}/pulls/{n}/reviews":
         return [{"user": {"login": r["author"]["login"]}, "state": r["state"], "body": r.get("body", ""),
                  "commit_id": r["commit"]["oid"], "submitted_at": r["submittedAt"]} for r in pr["reviews"]]
@@ -409,11 +445,13 @@ def rest(st, pr, endpoint, method, fields):
                 for f in view(st, pr)["files"]]
     if endpoint == f"{base}/issues/{n}/comments":
         if method == "POST":
-            add_comment(st, pr, next((f.split("=", 1)[1] for f in fields if f.startswith("body=")), ""))
+            add_comment(st, pr, str(body.get("body", "")))
             return {"html_url": f"{pr['url']}#issuecomment-{4000 + len(pr['comments'])}"}
         return [{"user": {"login": c["author"]["login"]}, "body": c["body"], "created_at": c["createdAt"]}
                 for c in pr["comments"]]
     if endpoint == f"{base}/pulls/{n}/merge" and method == "PUT":
+        if body.get("sha") and body["sha"] != sha:
+            die("gh: Head branch was modified. Review and try the merge again. (HTTP 409)")
         merge(st, pr)
         return {"merged": True, "message": "Pull Request successfully merged", "sha": sha}
     m = re.fullmatch(rf"{re.escape(base)}/compare/(.+?)\.\.\.(.+)", endpoint)
@@ -431,7 +469,25 @@ def rest(st, pr, endpoint, method, fields):
             {"name": c["name"], "status": "in_progress" if c["bucket"] == "pending" else "completed",
              "conclusion": {"pass": "success", "fail": "failure"}.get(c["bucket"]), "html_url": c["link"]}
             for c in runs]}
+    log(f"unsupported api {method} {endpoint}")
     die("gh: Not Found (HTTP 404)")
+
+
+def request_body(opts, fields):
+    """The JSON body gh builds: --input, then -f (as text) and -F (@file, @- and typed values)."""
+    body = {}
+    if opts.get("--input"):
+        src = opts["--input"]
+        text = sys.stdin.read() if src == "-" else open(src, encoding="utf-8").read()
+        body.update(json.loads(text) if text.strip() else {})
+    for raw, typed in fields:
+        key, _, val = raw.partition("=")
+        if typed and val.startswith("@"):
+            val = sys.stdin.read() if val == "@-" else open(val[1:], encoding="utf-8").read()
+        elif typed and (val in ("true", "false", "null") or re.fullmatch(r"-?\d+", val)):
+            val = json.loads(val)
+        body[key] = val
+    return body
 
 
 def api(st, args):
@@ -441,9 +497,11 @@ def api(st, args):
     owner, name = st["repo"].split("/")
     endpoint = re.sub(r"^(https://api\.github\.com)?/", "", pos[0].replace("{owner}", owner).replace("{repo}", name))
     if endpoint == "graphql":
+        log("unsupported api graphql")
         die("gh: GraphQL is not enabled for this token (HTTP 403)")
-    method = str(opts.get("--method") or ("POST" if fields else "GET")).upper()
-    emit(rest(st, st["pr"], endpoint, method, fields), opts)
+    body = request_body(opts, fields)
+    method = str(opts.get("--method") or ("POST" if body else "GET")).upper()
+    emit(rest(st, st["pr"], endpoint, method, body), opts)
 
 
 COMMANDS = {("pr", "view"): pr_view, ("pr", "checks"): pr_checks, ("pr", "diff"): pr_diff,
@@ -469,7 +527,7 @@ def main():
     if not fn:
         log(f"unsupported {' '.join(args[:2])}")
         die(f'unknown command "{" ".join(args[:2])}" for "gh"')
-    pos, opts, _ = parse(args[2:], PR_OPTS)
+    pos, opts, _ = parse(args[2:], {**PR_OPTS, "-s": "--state"} if fn is pr_list else PR_OPTS)
     fn(st, pos, opts)
 
 
