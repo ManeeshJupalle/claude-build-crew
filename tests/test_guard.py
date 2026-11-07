@@ -664,6 +664,8 @@ PS_BLOCKED = [
     "& { & ('git') push --force } *> $null",
     "& { & ('git') commit -not -m x }",
     "git push origin ('x'; & ('git') push --force)",
+    "$(1; git push origin ('--force'))",
+    "Write-Output ('a' | git push --force)",
     "if ($?) { & ('git') push --force }",
     "try { & ('git') commit -not -m x } catch { }",
 ]

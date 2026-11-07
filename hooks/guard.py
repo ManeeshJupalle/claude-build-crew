@@ -1012,32 +1012,49 @@ def check_ps(cmd: str, depth: int, state: dict, stdin: bool = False) -> str | No
     for grouping in (True, False):
         state.clear()
         state.update(start)
-        # values: for each open value group, [whether it's a ( ) group, whose ; and newlines separate values, not
-        # commands, and whether its -words are operators: in an expression, ($a -join "`n"), up to its first ;].
-        # A { } block holds statements, which can be commands
+        # values: for each open value group, [whether it's a ( ) group, whose ; and newlines separate values,
+        # whether its -words are operators (in an expression, ($a -join "`n"), up to its first ;), and the words of
+        # its statement after a ; or |, which can be a command: $(1; git push --force), checked on its own too].
+        # A { } block holds statements, which end the command as usual
         seg, piped, skip, values, lead = [], False, 0, [], False
+
+        def add(word):
+            seg.append(word)
+            for v in values:
+                if v[2] is not None:
+                    v[2].append(word)
+
+        def statement_reason(v):
+            return check_ps_segment(v[2], state, depth, v[3] or stdin) if v[2] else None
+
         for n, t in enumerate(tokens + [None]):  # None ends the last command
             opens = t is OPEN or t is BRACE
             if skip and t is not None:
                 skip += opens - (t is CLOSE)
             elif not grouping and opens and ps_command_word(tokens[n + 1:n + 2]):
-                seg.append(SUBST)
+                add(SUBST)
                 skip = 1
             elif not grouping and opens:
                 nxt = tokens[n + 1] if n + 1 < len(tokens) else None
                 lead = isinstance(nxt, str) and not isinstance(nxt, Quoted) and nxt.lower() in PS_VALUE_LEADS
                 if lead:  # it outputs what it echoes: its literals, and maybe more
-                    seg.append(SUBST)
-                values.append([t is OPEN, t is OPEN and not lead])
+                    add(SUBST)
+                values.append([t is OPEN, t is OPEN and not lead, None, False])
             elif not grouping and t is CLOSE:
+                reason = statement_reason(values[-1]) if values else None
+                if reason:
+                    return reason
                 values = values[:-1]
             elif values and values[-1][0] and (t is SEP or t is PIPE):  # ('x'; '--force') outputs both
-                values[-1][1] = False
+                reason = statement_reason(values[-1])
+                if reason:
+                    return reason
+                values[-1][1:] = [False, [], t is PIPE]
             elif isinstance(t, str):
                 if lead:  # if, echo: not output
                     lead = False
                 elif not (values and values[-1][1] and t[:1] == "-" and not isinstance(t, Quoted)):
-                    seg.append(t)
+                    add(t)
             else:
                 reason = check_ps_segment(seg, state, depth, piped or stdin) if seg else None
                 if reason:
