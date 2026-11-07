@@ -32,6 +32,7 @@
   - a `<<` in quotes or a comment, which was taken for a heredoc and hid the lines after it, and heredocs whose delimiter bash reads another way: `<<<EOF`, `<<E"OF"`, `<<EOF.x`, `<< ';'`
   - heredocs: the `$(…)` and backticks in an unquoted heredoc's body, which bash runs; a closing line with spaces around the delimiter, which bash doesn't count; and a delimiter the guard can't read, such as `<<''` or `<<$EOF`, which is refused
   - a process substitution that split a command, as in `rm -rf <(true) ~`, and a shell or `source` running one as its script: `bash <(…)`, `. <(…)`, `pwsh <(…)`
+  - a hook-skipping variable after another word in `export`, `declare` or `typeset`, which bash still sets: `export x HUSKY=0`, `declare -x HUSKY=0`
   - a shell reading stdin through `/dev/stdin`, a redirect next to it (`bash<<EOF`, `| bash 2>/dev/null`), a shell it runs (`| bash -c bash`), `xargs -I{} bash -c '{}'`, or `cmd` without `/c`
   - bash options that hid the command: `-euo pipefail` before a heredoc, `bash -c -e '…'`, `-oc`, `-co`
   - a redirect that split a command, as in `git push &>/dev/null --force` or `git push 2>&1 --force`

@@ -712,7 +712,10 @@ def check_segment(seg: list[str], state: dict, depth: int, stdin: bool = False) 
     check_time()
     rest = strip_prefix(seg)
     prefix = seg[:len(seg) - len(rest)]
-    for t in prefix:  # assignments can follow keywords and wrappers too: env HUSKY=0 git ...
+    # assignments can follow keywords and wrappers too: env HUSKY=0 git ... And export and the like set each NAME=value
+    # they get, even after a word they refuse: export x HUSKY=0
+    assigning = "export" in prefix or set(rest[:1]) & {"declare", "typeset", "readonly", "local"}
+    for t in prefix + (rest if assigning else []):
         if HOOK_SKIP_ENV.match(t):
             return f"Skipping git hooks via {t.split('=')[0]} is forbidden."
     # xargs's options, when it runs the command: not when xargs is a value (sudo -u xargs)

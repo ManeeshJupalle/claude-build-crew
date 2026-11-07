@@ -379,6 +379,12 @@ BLOCKED = [
     ". <(cat env.sh)",
     "pwsh -NoProfile <(cat steps.ps1)",
     "bash -c <(cat steps.sh)",
+    # export sets each NAME=value it gets, even after a name it refuses
+    "export <(true) HUSKY=0; git commit -m x",
+    "export x HUSKY=0; git commit -m x",
+    "export $(true) HUSKY=0; git commit -m x",
+    "declare -x HUSKY=0; git commit -m x",
+    "typeset -x SKIP=lint; git commit -m x",
 ]
 
 # blocked because they can't be parsed, the only cases allowed to block that way
