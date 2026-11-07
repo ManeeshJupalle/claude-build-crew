@@ -50,11 +50,12 @@ def test_all_skipped_is_not_a_pass(tmp_path):
     assert code == 1 and all(c["status"] == "SKIPPED" for c in out["checks"])
 
 
-def venv_pytest(root):
+def venv_pytest(root, pyproject=True):
     """A Python project whose virtualenv pytest passes."""
     scripts, exe = ("Scripts", ".exe") if os.name == "nt" else ("bin", "")
     (root / ".venv" / scripts).mkdir(parents=True)
-    (root / "pyproject.toml").write_text("[tool.pytest.ini_options]\n")
+    if pyproject:
+        (root / "pyproject.toml").write_text("[tool.pytest.ini_options]\n")
     fake = root / ".venv" / scripts / f"pytest{exe}"
     fake.write_text("#!/bin/sh\nexit 0\n")  # bash runs this stand-in on every OS, even when it's named .exe
     fake.chmod(0o755)
@@ -91,6 +92,14 @@ def test_finds_pytest_suite_without_packaging_files(tmp_path, name):
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / name).write_text("def test_x():\n    pass\n")
     assert detected(tmp_path) == ["pytest -q"]
+
+
+def test_pytest_suite_prefers_project_virtualenv(tmp_path):
+    fake = venv_pytest(tmp_path, pyproject=False)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_x.py").write_text("def test_x():\n    pass\n")
+    code, out = run_gate("checks.py", cwd=tmp_path, env=env(tmp_path))
+    assert code == 0 and out["checks"][0]["cmd"].startswith(fake.as_posix())
 
 
 def test_tests_folder_alone_is_not_python(tmp_path):
