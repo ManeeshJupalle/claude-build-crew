@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A stand-in for npm, pip-audit and the virtualenv's python, driven by a JSON file (FAKE_TOOL_STATE).
 
-The file maps "outdated", "audit", "pip list --not-required", "pip list --outdated", "pip list --uptodate",
+The file maps "prefix", "outdated", "audit", "pip list --not-required", "pip list --outdated", "pip list --uptodate",
 "site" and "pip-audit" to {"stdout", "stderr", "code"}, and each call's arguments are appended to "calls".
 """
 import json
