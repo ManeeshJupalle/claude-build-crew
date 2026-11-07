@@ -385,6 +385,9 @@ BLOCKED = [
     "export $(true) HUSKY=0; git commit -m x",
     "declare -x HUSKY=0; git commit -m x",
     "typeset -x SKIP=lint; git commit -m x",
+    # GNU rm takes a long option's unique prefix
+    "rm --rec ~",
+    "rm --recu -f /",
 ]
 
 # blocked because they can't be parsed, the only cases allowed to block that way
@@ -630,9 +633,43 @@ PS_BLOCKED = [
     "gh api graphql -f query=$(Get-Content q.graphql -Raw)",
     "gh api 'gr%61phql' --input -",
     "gh api \"$(Write-Output graphql)\" --input -",
+    # a # comment in a subexpression runs to the end of its line: a ) in it doesn't close the $(
+    "Write-Output \"$(git status # )\ngit push --force)\"",
+    "Write-Output \"$(git status <# ) #> ; git push --force)\"",
+    # more ways to assign a command's output
+    "[string] $x = git push --force",
+    "$x[0].y = git push --force",
+    # ${env:...} is the same variable as $env:...
+    "Remove-Item -Recurse ${env:USERPROFILE}",
+    "Remove-Item -Recurse -Force ${env:HOME}\\*",
+    # a group led by a keyword or echo outputs its literals, which become arguments
+    "git push origin $(if ($true) {'--force'})",
+    "git push origin $(switch (1) { 1 {'--force'} })",
+    "git push origin $(foreach ($f in 1) {'--force'})",
+    "git push origin (echo '--force')",
+    "git push origin (Write-Output --force)",
+    # a newline or ; inside a value group doesn't end the command
+    "git push origin @(\n'x',\n'--force'\n)",
+    "git push origin $('x'; '--force')",
+    # Set-Item and friends bind more than -Path and -Value
+    "Set-Content -Encoding utf8 env:HUSKY 0",
+    "Set-Item -Filter * env:HUSKY 0",
+    "New-Item -Path Env: -Name HUSKY -Value 0",
+    "New-Item -Force -Path env:\\ -Name HUSKY -Value 0",
+    "Set-Item -Path*> $null Env:\\HUSKY -Value 0",            # a redirect isn't a parameter's value
+    # a value group's output is more than its literals, and a { } block holds commands, whose -words are flags
+    "gh api (Write-Output graphql) --input -",
+    "gh api $(if ($true) {'graphql'}) --input -",
+    "gh api $(Get-Endpoint) --input -",
+    "& { & ('git') push --force } *> $null",
+    "& { & ('git') commit -not -m x }",
+    "git push origin ('x'; & ('git') push --force)",
+    "if ($?) { & ('git') push --force }",
+    "try { & ('git') commit -not -m x } catch { }",
 ]
 
-PS_UNPARSEABLE = ["git commit -m 'unbalanced", "git push --force`"]
+PS_UNPARSEABLE = ["git commit -m 'unbalanced", "git push --force`",
+                  "Write-Output \"a $(git status # a comment, so the ) closes nothing) b\""]
 
 PS_ALLOWED = [
     "git status",
@@ -682,6 +719,13 @@ PS_ALLOWED = [
     "git config --get core.hooksPath *> $null",
     "npm test > test.log 2>&1",
     "git pull || pwsh -NoProfile",
+    # in an expression, -join and the like are operators, not flags
+    "git commit -m ($lines -join \"`n\")",
+    "git commit -m ('fix: ' + $msg -replace 'x', 'y')",
+    "git commit -m (echo 'fix: x')",
+    "New-Item -Path . -Name notes.txt -Value x",
+    "Set-Content -Encoding utf8 notes.txt 'HUSKY=0'",
+    "[string] $branch = git branch --show-current",
 ]
 
 
