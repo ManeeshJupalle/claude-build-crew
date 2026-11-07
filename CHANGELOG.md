@@ -20,8 +20,23 @@
   - With npm workspaces, each installed copy of a package is listed, with its `location` and its `dependents`, both as paths from npm's root, also when run from a workspace's folder. A vulnerability marks only the copies `npm audit` names, also one that isn't outdated. Before, only the last copy was kept. `/deps` installs an update in each dependent, with `-w` for a workspace.
   - An update from 0.0.x to 0.0.y counts as a major bump, as npm's `^` reads it, so `/deps` skips it unless you name the package. Before, it was a patch.
 - `merge_gate` reports a merge that worked even when gh fails afterwards, for example deleting a local branch that another worktree has checked out. Before, it said `"merged": false` for a PR GitHub had merged. (#56)
+- The guard allows commands it wrongly blocked: (#58)
+  - a `git config` read that ends with a redirect, such as `git config --get core.hooksPath 2>/dev/null`, `2>&1` or PowerShell's `2>$null`. A quoted `'2>/dev/null'` is still refused, since git sets the path to it.
+  - `ls scripts/*.sh | xargs -n1 bash --`, where the `--` makes what xargs passes bash a script's name. Without it, xargs could pass `-c` and a command, so that form is still refused.
+  - `diff <(sort a) <(sort b)`: a process substitution is one word, and its command is checked
+  - `git pull || pwsh -NoProfile`: PowerShell 7's `||` runs the next command, it isn't a pipe
+  - `gh api` REST paths that only contain "graphql", such as `repos/o/graphql-tools/issues --input body.json`
 
 ### Security
+- The guard catches more ways past it: (#58)
+  - a `<<` in quotes or a comment, which was taken for a heredoc and hid the lines after it, and heredocs whose delimiter bash reads another way: `<<<EOF`, `<<E"OF"`, `<<EOF.x`, `<< ';'`
+  - heredocs: the `$(…)` and backticks in an unquoted heredoc's body, which bash runs; a closing line with spaces around the delimiter, which bash doesn't count; and a delimiter the guard can't read, such as `<<''` or `<<$EOF`, which is refused
+  - a process substitution that split a command, as in `rm -rf <(true) ~`, and a shell or `source` running one as its script: `bash <(…)`, `. <(…)`, `pwsh <(…)`
+  - a hook-skipping variable after another word in `export`, `declare` or `typeset`, which bash still sets: `export x HUSKY=0`, `declare -x HUSKY=0`
+  - a shell reading stdin through `/dev/stdin`, a redirect next to it (`bash<<EOF`, `| bash 2>/dev/null`), a shell it runs (`| bash -c bash`), `xargs -I{} bash -c '{}'`, or `cmd` without `/c`
+  - bash options that hid the command: `-euo pipefail` before a heredoc, `bash -c -e '…'`, `-oc`, `-co`
+  - a redirect that split a command, as in `git push &>/dev/null --force` or `git push 2>&1 --force`
+  - a GraphQL query built from `$(…)`, or sent to an encoded endpoint such as `gr%61phql`
 - `merge_gate` passes only if the PR merged at the head the review approved. Before, it also passed when someone pushed a new commit and merged the PR outside the gate while it ran. (#56)
 
 ## [0.5.0] - 2026-11-05
