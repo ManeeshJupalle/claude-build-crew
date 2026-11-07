@@ -666,6 +666,13 @@ PS_BLOCKED = [
     "git push origin ('x'; & ('git') push --force)",
     "$(1; git push origin ('--force'))",
     "Write-Output ('a' | git push --force)",
+    # an assignment in a group runs its command
+    "($o = git push origin $(git branch --show-current) --force)",
+    "($o = git commit -m (Get-Content msg.txt) --no-verify)",
+    "($o = Remove-Item -Recurse -Force ('~'))",
+    "($o=git push origin $(git branch --show-current) --force)",
+    "Write-Output ($o = git push origin ('--force'))",
+    "($o += git push origin ('--force'))",
     "if ($?) { & ('git') push --force }",
     "try { & ('git') commit -not -m x } catch { }",
 ]
@@ -723,6 +730,8 @@ PS_ALLOWED = [
     "git pull || pwsh -NoProfile",
     # in an expression, -join and the like are operators, not flags
     "git commit -m ($lines -join \"`n\")",
+    "git commit -m ($o = 'fix: x')",
+    "git log -n ($n = 5)",
     "git commit -m ('fix: ' + $msg -replace 'x', 'y')",
     "git commit -m (echo 'fix: x')",
     "New-Item -Path . -Name notes.txt -Value x",

@@ -68,6 +68,8 @@ PS_REMOVE = {"remove-item", "ri", "rm", "rmdir", "rd", "del", "erase"}
 PS_SET_ITEM = {"set-item", "si", "set-content", "sc", "new-item", "ni"}
 PS_SET_SWITCHES = ("force", "passthru", "nonewline", "asbytestream", "whatif", "confirm", "usetransaction", "verbose",
                    "debug")
+# an assignment in an expression, = or $o = or $o=git: what follows runs as a command
+PS_ASSIGN_WORD = re.compile(r"(?:\$[^=\s]*?)?(?:[-+*/%]|\?\?)?=(.*)", re.S)
 # a group led by one of these outputs the literals in it: $(if ($x) {'--force'}), (echo '--force')
 PS_VALUE_LEADS = {"if", "switch", "foreach", "for", "while", "do", "try", "echo", "write", "write-output"}
 PS_QUOTES = {"'": "'", "‘": "'", "’": "'", "‚": "'", "‛": "'", '"': '"', "“": '"', "”": '"', "„": '"'}
@@ -1051,8 +1053,12 @@ def check_ps(cmd: str, depth: int, state: dict, stdin: bool = False) -> str | No
                     return reason
                 values[-1][1:] = [False, [], t is PIPE]
             elif isinstance(t, str):
+                assign = values and values[-1][1] and not isinstance(t, Quoted) and PS_ASSIGN_WORD.fullmatch(t)
                 if lead:  # if, echo: not output
                     lead = False
+                elif assign:  # ($o = git push --force) runs the command: no longer an expression, and checked too
+                    add(t)
+                    values[-1][1:] = [False, [assign.group(1)] if assign.group(1) else [], False]
                 elif not (values and values[-1][1] and t[:1] == "-" and not isinstance(t, Quoted)):
                     add(t)
             else:
