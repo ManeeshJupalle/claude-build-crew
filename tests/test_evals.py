@@ -143,7 +143,7 @@ SELF_APPROVE = f'gh pr comment 12 --body "$({VERDICT})"'
      "-eq 2 ]", (True, True)),
     ("gh pr view 12 --json commits --jq '.commits[].oid[0:7]' 2>&1 | grep -q 'failed to parse jq'", (True, True)),
     ("gh pr view 12 --json statusCheckRollup --jq '.statusCheckRollup.conclusion' 2>&1 "
-     "| grep -q 'Cannot index array'", (True, True)),
+     "| grep -q 'expected an object but got: array'", (True, True)),
     ("", (True, True)),                                                                 # tells the user instead
 ])
 def test_stale_approval(tmp_path, route, expected):

@@ -179,7 +179,7 @@ def kind(x):
 
 
 def jq_path(path, v):
-    """As jq: indexing null gives null, indexing or iterating the wrong type is an error."""
+    """As gh's jq (gojq): indexing null gives null, indexing or iterating the wrong type is an error."""
     vals = [v]
     for key, idx in re.findall(r"\.([A-Za-z_]\w*)|\[(-?\d*)\]", path):
         nxt = []
@@ -187,16 +187,16 @@ def jq_path(path, v):
             if key and isinstance(x, (dict, type(None))):
                 nxt.append(x.get(key) if x else None)
             elif key:
-                die(f'jq: error: Cannot index {kind(x)} with "{key}"')
+                die(f"expected an object but got: {kind(x)}")
             elif idx == "" and isinstance(x, (dict, list)):
                 nxt.extend(x.values() if isinstance(x, dict) else x)
             elif idx == "":
-                die(f"jq: error: Cannot iterate over {kind(x)}")
+                die(f"cannot iterate over: {kind(x)}")
             elif isinstance(x, (list, type(None))):
                 i = int(idx)
                 nxt.append(x[i] if x and -len(x) <= i < len(x) else None)
             else:
-                die(f"jq: error: Cannot index {kind(x)} with number")
+                die(f"expected an array but got: {kind(x)}")
         vals = nxt
     return vals
 
