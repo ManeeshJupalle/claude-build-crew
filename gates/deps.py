@@ -33,7 +33,9 @@ def version_key(v: str) -> list[int]:
 
 def bump(current: str, latest: str) -> str:
     cur, new = ((version_key(v) + [0, 0, 0])[:3] for v in (current, latest))
-    if new[0] != cur[0] or (cur[0] == 0 and new[1] != cur[1]):  # under 1.0, a minor bump may break
+    # as npm's ^: only what's right of the first non-zero part may change. ^1.2.3 is <2.0.0, ^0.2.3 <0.3.0, ^0.0.3 <0.0.4
+    lead = next((i for i, n in enumerate(cur) if n), 2)
+    if new[:lead + 1] != cur[:lead + 1]:
         return "major"
     return "minor" if new[1] != cur[1] else "patch"
 
@@ -89,10 +91,12 @@ def npm_deps(root: Path, found: dict, checks: list) -> None:
                            "detail": "not installed: " + ", ".join(missing) + " (run `npm ci` first)"})
         else:
             checks.append({"name": "npm outdated", "status": "PASS"})
-            for n, e in entries:
+            for n, e in entries:  # with workspaces, a name is listed for each package that depends on it: keep each copy
                 if e.get("latest") and e["latest"] != e["current"]:
-                    found[("npm", n)] = {"ecosystem": "npm", "name": n, "current": e["current"],
-                                         "latest": e["latest"], "bump": bump(e["current"], e["latest"])}
+                    found[("npm", n, e.get("location"))] = {
+                        "ecosystem": "npm", "name": n, "current": e["current"], "latest": e["latest"],
+                        "bump": bump(e["current"], e["latest"]),
+                        **({"location": e.get("location")} if isinstance(data[n], list) else {})}
     res, data = call([*npm, "audit", "--json"], root)
     vulns = data.get("vulnerabilities") if isinstance(data, dict) else None
     if res.returncode not in (0, 1) or not isinstance(vulns, dict) or "error" in data:
@@ -100,9 +104,11 @@ def npm_deps(root: Path, found: dict, checks: list) -> None:
         return
     checks.append({"name": "npm audit", "status": "PASS"})
     for n, v in vulns.items():
-        d = found.setdefault(("npm", n), {"ecosystem": "npm", "name": n})
-        d.update(vulnerable=True, severity=v.get("severity"), direct=bool(v.get("isDirect")), **npm_fix(n, v.get("fixAvailable")),
-                 advisories=sorted({a.get("url") or str(a.get("source")) for a in v.get("via", []) if isinstance(a, dict)}))
+        copies = [d for k, d in found.items() if k[:2] == ("npm", n)]  # npm audit names the package, not a copy
+        for d in copies or [found.setdefault(("npm", n), {"ecosystem": "npm", "name": n})]:
+            d.update(vulnerable=True, severity=v.get("severity"), direct=bool(v.get("isDirect")),
+                     **npm_fix(n, v.get("fixAvailable")),
+                     advisories=sorted({a.get("url") or str(a.get("source")) for a in v.get("via", []) if isinstance(a, dict)}))
 
 
 def npm_fix(name: str, fa) -> dict:
@@ -149,12 +155,17 @@ def python_deps(root: Path, found: dict, checks: list) -> None:
         checks.append(failed("pip list --outdated", bad))
     else:
         direct = {canon(e["name"]) for e in top} - tools
-        # pip leaves out what it couldn't look up (an unreachable index), so it must be in one list or the other
+        # pip leaves out what it couldn't look up, so it must be in one list or the other. If pip found nothing at all,
+        # the index is down; if not, the package isn't on it, or it's a pre-release and pip list looks only for releases
         unchecked = sorted(direct - {canon(e["name"]) for e in data + current})
         if unchecked:
+            version = {canon(e["name"]): e["version"] for e in top}
             checks.append({"name": "pip list --outdated", "status": "FAIL",
-                           "detail": "pip couldn't find the latest version of " + ", ".join(unchecked) +
-                                     " (is the package index reachable?)"})
+                           "detail": "pip couldn't find the latest version of " + (
+                               ", ".join(unchecked) + " (is the package index reachable?)" if not (data or current) else
+                               ", ".join(f"{n} ({version[n]} is a pre-release, and pip list looks only for releases)"
+                                         if re.search(r"(a|b|rc|dev)\d", version[n].split("+")[0])
+                                         else f"{n} (not on the package index)" for n in unchecked))})
         else:
             checks.append({"name": "pip list --outdated", "status": "PASS"})
         for e in data:

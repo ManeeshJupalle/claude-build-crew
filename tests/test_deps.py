@@ -1,10 +1,11 @@
 import json
+import re
 import sys
 from pathlib import Path
 
 import pytest
 
-from conftest import run_gate
+from conftest import ROOT, run_gate
 
 FAKE = Path(__file__).with_name("fake_tool.py")
 NPM = {"package.json": "{}"}
@@ -13,7 +14,9 @@ PY = {"requirements.txt": "requests==2.0.0\n"}
 OUTDATED = {"left-pad": {"current": "1.0.0", "wanted": "1.0.2", "latest": "1.0.2"},
             "express": {"current": "4.17.0", "wanted": "4.21.0", "latest": "4.21.0"},
             "react": {"current": "17.0.2", "wanted": "17.0.2", "latest": "18.3.1"},
-            "tiny": {"current": "0.1.0", "wanted": "0.1.0", "latest": "0.2.0"}}
+            "tiny": {"current": "0.1.0", "wanted": "0.1.0", "latest": "0.2.0"},
+            "small": {"current": "0.2.3", "wanted": "0.2.5", "latest": "0.2.5"},
+            "nano": {"current": "0.0.8", "wanted": "0.0.8", "latest": "0.0.9"}}
 AUDIT_CLEAN = {"auditReportVersion": 2, "vulnerabilities": {}}
 AUDIT_VULN = {"auditReportVersion": 2, "vulnerabilities": {"express": {
     "name": "express", "severity": "high", "isDirect": True, "fixAvailable": True,
@@ -62,7 +65,8 @@ def test_npm_outdated_and_bump_kinds(tmp_path):
     code, out = gate(tmp_path, NPM, {"outdated": {"stdout": OUTDATED, "code": 1}, "audit": {"stdout": AUDIT_CLEAN}})
     assert code == 0 and out["verdict"] == "OUTDATED"
     assert {n: d["bump"] for n, d in by_name(out).items()} == {
-        "left-pad": "patch", "express": "minor", "react": "major", "tiny": "major"}  # 0.1 -> 0.2 may break
+        "left-pad": "patch", "express": "minor", "react": "major",
+        "tiny": "major", "small": "patch", "nano": "major"}  # as npm's ^: ^0.1.0 is <0.2.0, ^0.0.8 is <0.0.9
 
 
 def test_npm_up_to_date(tmp_path):
@@ -92,11 +96,27 @@ def test_npm_fix_is_a_list_like_python(tmp_path):
     assert deps["old"]["fix"] == [] and "fix_via" not in deps["old"]
 
 
+def test_deps_lists_what_npm_audit_fix_changed():
+    # npm names no version when `npm audit fix` can fix it, and that fixes all it can, not just the one /deps picked
+    step = re.search(r"(?m)^7\. \*\*Report\*\*.*", (ROOT / "commands" / "deps.md").read_text(encoding="utf-8")).group(0)
+    assert "npm audit fix" in step and "package-lock.json" in step
+
+
 def test_npm_workspaces_list_each_location(tmp_path):
-    lodash = [{"current": "4.17.20", "wanted": "4.17.21", "latest": "4.17.21", "location": "node_modules/lodash"},
-              {"current": "4.17.19", "wanted": "4.17.21", "latest": "4.17.21", "location": "packages/a/node_modules/lodash"}]
-    code, out = gate(tmp_path, NPM, {"outdated": {"stdout": {"lodash": lodash}, "code": 1}, "audit": {"stdout": AUDIT_CLEAN}})
-    assert code == 0 and out["verdict"] == "OUTDATED" and by_name(out)["lodash"]["bump"] == "patch"
+    # npm lists a name once for each package that depends on it: here the root (p) and workspace a share one copy
+    hoisted, nested = "/p/node_modules/lodash", "/p/packages/b/node_modules/lodash"
+    lodash = [{"current": "4.17.20", "wanted": "4.17.21", "latest": "4.17.21", "dependent": "a", "location": hoisted},
+              {"current": "4.17.20", "wanted": "4.17.21", "latest": "4.17.21", "dependent": "p", "location": hoisted},
+              {"current": "3.10.1", "wanted": "3.10.1", "latest": "4.17.21", "dependent": "b", "location": nested}]
+    outdated = {"stdout": {"lodash": lodash}, "code": 1}
+    code, out = gate(tmp_path, NPM, {"outdated": outdated, "audit": {"stdout": AUDIT_CLEAN}})
+    assert code == 0 and out["verdict"] == "OUTDATED"
+    assert [(d["location"], d["current"], d["bump"]) for d in out["dependencies"]] == [
+        (hoisted, "4.17.20", "patch"), (nested, "3.10.1", "major")]
+    audit = {"vulnerabilities": {"lodash": {"severity": "high", "isDirect": True, "fixAvailable": True, "via": []}}}
+    code, out = gate(tmp_path, NPM, {"outdated": outdated, "audit": {"stdout": audit, "code": 1}})
+    # npm audit reports the package, not a copy: each copy is marked, and none is listed twice
+    assert [(d["location"], d["vulnerable"]) for d in out["dependencies"]] == [(hoisted, True), (nested, True)]
 
 
 def test_python_outdated_and_vulnerable(tmp_path):
@@ -132,6 +152,21 @@ def test_pip_audit_names_what_it_skipped(tmp_path):
                               {"name": "myproject", "skip_reason": "Dependency not found on PyPI"}]}
     code, out = gate(tmp_path, PY, py(**{"pip list --outdated": {"stdout": []}, "pip-audit": {"stdout": audit}}))
     assert code == 0 and out["checks"][1] == {"name": "pip-audit", "status": "PASS", "detail": "skipped myproject"}
+
+
+@pytest.mark.parametrize("changes,why", [
+    ({"pip list --outdated": {"stdout": []}, "pip list --uptodate": {"stdout": []}},  # pip found nothing at all
+     "requests (is the package index reachable?)"),
+    ({"pip list --not-required": {"stdout": TOP + [{"name": "mylib", "version": "0.3.0"}]}},  # from git or a local file
+     "mylib (not on the package index)"),
+    ({"pip list --not-required": {"stdout": TOP + [{"name": "httpx", "version": "1.0.0b1"}]}},  # newer than any release
+     "httpx (1.0.0b1 is a pre-release, and pip list looks only for releases)"),
+])
+def test_pip_says_why_it_couldnt_check_a_package(tmp_path, changes, why):
+    code, out = gate(tmp_path, PY, py(**changes))
+    assert code == 1 and out["verdict"] == "CHECK FAILED"
+    assert out["checks"][0] == {"name": "pip list --outdated", "status": "FAIL",
+                                "detail": "pip couldn't find the latest version of " + why}
 
 
 def test_python_up_to_date(tmp_path):
