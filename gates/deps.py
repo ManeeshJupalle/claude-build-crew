@@ -72,6 +72,15 @@ def failed(name: str, res) -> dict:
             "detail": "\n".join((res.stdout + res.stderr).strip().splitlines()[-15:]) or f"exit {res.returncode}"}
 
 
+def copy_at(root: Path, location) -> str | None:
+    """A copy's path from the root, as npm audit gives it. npm outdated gives an absolute path, but masks what looks like
+    a secret in it, such as a UUID in a folder's name, as ***: so take the parts below the root's depth."""
+    if not location:
+        return None
+    parts = Path(location).parts
+    return "/".join(parts[len(Path(os.path.realpath(root)).parts):] if Path(location).is_absolute() else parts)
+
+
 def npm_deps(root: Path, found: dict, checks: list) -> None:
     if not (root / "package.json").exists():
         return
@@ -91,12 +100,14 @@ def npm_deps(root: Path, found: dict, checks: list) -> None:
                            "detail": "not installed: " + ", ".join(missing) + " (run `npm ci` first)"})
         else:
             checks.append({"name": "npm outdated", "status": "PASS"})
-            for n, e in entries:  # with workspaces, a name is listed for each package that depends on it: keep each copy
+            for n, e in entries:  # with workspaces, a name is listed for each package that depends on it
                 if e.get("latest") and e["latest"] != e["current"]:
-                    found[("npm", n, e.get("location"))] = {
+                    at = copy_at(root, e.get("location"))
+                    d = found.setdefault(("npm", n, at), {
                         "ecosystem": "npm", "name": n, "current": e["current"], "latest": e["latest"],
-                        "bump": bump(e["current"], e["latest"]),
-                        **({"location": e.get("location")} if isinstance(data[n], list) else {})}
+                        "bump": bump(e["current"], e["latest"]), **({"location": at} if at else {})})
+                    if e.get("dependent"):  # a workspace, or the root project by its folder's name
+                        d["dependents"] = sorted({*d.get("dependents", []), e["dependent"]})
     res, data = call([*npm, "audit", "--json"], root)
     vulns = data.get("vulnerabilities") if isinstance(data, dict) else None
     if res.returncode not in (0, 1) or not isinstance(vulns, dict) or "error" in data:
@@ -104,8 +115,9 @@ def npm_deps(root: Path, found: dict, checks: list) -> None:
         return
     checks.append({"name": "npm audit", "status": "PASS"})
     for n, v in vulns.items():
-        copies = [d for k, d in found.items() if k[:2] == ("npm", n)]  # npm audit names the package, not a copy
-        for d in copies or [found.setdefault(("npm", n), {"ecosystem": "npm", "name": n})]:
+        for node in v.get("nodes") or [None]:  # each affected copy, also one npm outdated didn't list
+            at = copy_at(root, node)
+            d = found.setdefault(("npm", n, at), {"ecosystem": "npm", "name": n, **({"location": at} if at else {})})
             d.update(vulnerable=True, severity=v.get("severity"), direct=bool(v.get("isDirect")),
                      **npm_fix(n, v.get("fixAvailable")),
                      advisories=sorted({a.get("url") or str(a.get("source")) for a in v.get("via", []) if isinstance(a, dict)}))
@@ -123,6 +135,13 @@ def npm_fix(name: str, fa) -> dict:
 
 def canon(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def version_says(version: str) -> str:
+    """By PEP 440, 1.0b1 and 0.1.dev3 are pre-releases, and 1.0+cu118 is a local version."""
+    facts = [fact for fact, hit in (("a pre-release", re.search(r"(a|b|rc|dev)\d", version.split("+")[0])),
+                                    ("a local version", "+" in version)) if hit]
+    return f" ({', '.join(facts)})" if facts else ""
 
 
 def venv_tools(root: Path) -> set[str]:
@@ -155,17 +174,20 @@ def python_deps(root: Path, found: dict, checks: list) -> None:
         checks.append(failed("pip list --outdated", bad))
     else:
         direct = {canon(e["name"]) for e in top} - tools
-        # pip leaves out what it couldn't look up, so it must be in one list or the other. If pip found nothing at all,
-        # the index is down; if not, the package isn't on it, or it's a pre-release and pip list looks only for releases
+        # pip lists only what it found a release at or above the installed version of, so each must be in one list or
+        # the other. Why one isn't is a guess (an index that's down answers nothing, and pip still exits 0), except for
+        # what its version says
         unchecked = sorted(direct - {canon(e["name"]) for e in data + current})
         if unchecked:
             version = {canon(e["name"]): e["version"] for e in top}
             checks.append({"name": "pip list --outdated", "status": "FAIL",
-                           "detail": "pip couldn't find the latest version of " + (
-                               ", ".join(unchecked) + " (is the package index reachable?)" if not (data or current) else
-                               ", ".join(f"{n} ({version[n]} is a pre-release, and pip list looks only for releases)"
-                                         if re.search(r"(a|b|rc|dev)\d", version[n].split("+")[0])
-                                         else f"{n} (not on the package index)" for n in unchecked))})
+                           "detail": "pip found no release at or above the installed version of " +
+                                     ", ".join(f"{n} {version[n]}" + version_says(version[n]) for n in unchecked) +
+                                     (", and none of any other package either: is the package index reachable?"
+                                      if not (data or current) else
+                                      ". Possible causes: it isn't on the package index, an index that has it is "
+                                      "unreachable, or the installed version is newer than any release there (from git, "
+                                      "a local version or a pre-release)")})
         else:
             checks.append({"name": "pip list --outdated", "status": "PASS"})
         for e in data:

@@ -96,27 +96,41 @@ def test_npm_fix_is_a_list_like_python(tmp_path):
     assert deps["old"]["fix"] == [] and "fix_via" not in deps["old"]
 
 
+def deps_step(n):
+    return re.search(rf"(?m)^{n}\. .*", (ROOT / "commands" / "deps.md").read_text(encoding="utf-8")).group(0)
+
+
 def test_deps_lists_what_npm_audit_fix_changed():
     # npm names no version when `npm audit fix` can fix it, and that fixes all it can, not just the one /deps picked
-    step = re.search(r"(?m)^7\. \*\*Report\*\*.*", (ROOT / "commands" / "deps.md").read_text(encoding="utf-8")).group(0)
-    assert "npm audit fix" in step and "package-lock.json" in step
+    assert "npm audit fix" in deps_step(7) and "package-lock.json" in deps_step(7)
 
 
-def test_npm_workspaces_list_each_location(tmp_path):
-    # npm lists a name once for each package that depends on it: here the root (p) and workspace a share one copy
-    hoisted, nested = "/p/node_modules/lodash", "/p/packages/b/node_modules/lodash"
-    lodash = [{"current": "4.17.20", "wanted": "4.17.21", "latest": "4.17.21", "dependent": "a", "location": hoisted},
-              {"current": "4.17.20", "wanted": "4.17.21", "latest": "4.17.21", "dependent": "p", "location": hoisted},
-              {"current": "3.10.1", "wanted": "3.10.1", "latest": "4.17.21", "dependent": "b", "location": nested}]
-    outdated = {"stdout": {"lodash": lodash}, "code": 1}
-    code, out = gate(tmp_path, NPM, {"outdated": outdated, "audit": {"stdout": AUDIT_CLEAN}})
-    assert code == 0 and out["verdict"] == "OUTDATED"
-    assert [(d["location"], d["current"], d["bump"]) for d in out["dependencies"]] == [
-        (hoisted, "4.17.20", "patch"), (nested, "3.10.1", "major")]
-    audit = {"vulnerabilities": {"lodash": {"severity": "high", "isDirect": True, "fixAvailable": True, "via": []}}}
-    code, out = gate(tmp_path, NPM, {"outdated": outdated, "audit": {"stdout": audit, "code": 1}})
-    # npm audit reports the package, not a copy: each copy is marked, and none is listed twice
-    assert [(d["location"], d["vulnerable"]) for d in out["dependencies"]] == [(hoisted, True), (nested, True)]
+def test_deps_updates_an_npm_copy_in_each_workspace_that_depends_on_it():
+    # `npm install` at the root changes the root's package.json, and a workspace's own pin keeps the old version
+    assert "`dependents`" in deps_step(4) and "-w <" in deps_step(4)
+
+
+def test_npm_workspaces_list_each_copy(tmp_path):
+    # as npm 11 gives it: the root (p) and workspace a pin minimist 1.2.5, hoisted, and b pins 0.2.4, nested. npm outdated
+    # lists each dependent with the copy's absolute path, masking a UUID in it as ***; npm audit lists the affected
+    # copies by their path from the root
+    hoisted, nested, deep = "node_modules/minimist", "packages/b/node_modules/minimist", "node_modules/mkdirp/node_modules/minimist"
+    masked = tmp_path.parent / "***"
+    minimist = [{"current": "1.2.5", "wanted": "1.2.5", "latest": "1.2.8", "dependent": "a", "location": str(masked / hoisted)},
+                {"current": "0.2.4", "wanted": "0.2.4", "latest": "1.2.8", "dependent": "b", "location": str(masked / nested)},
+                {"current": "1.2.5", "wanted": "1.2.5", "latest": "1.2.8", "dependent": "p", "location": str(masked / hoisted)}]
+    audit = {"vulnerabilities": {"minimist": {
+        "name": "minimist", "severity": "critical", "isDirect": True, "range": "1.0.0 - 1.2.5",
+        "nodes": ["node_modules/minimist", "node_modules/mkdirp/node_modules/minimist"],  # mkdirp's isn't outdated
+        "fixAvailable": {"name": "minimist", "version": "1.2.8", "isSemVerMajor": False},
+        "via": [{"source": 1097678, "url": "https://github.com/advisories/GHSA-xvch-5gv4-984h", "range": ">=1.0.0 <1.2.6"}]}}}
+    code, out = gate(tmp_path, NPM, {"outdated": {"stdout": {"minimist": minimist}, "code": 1},
+                                     "audit": {"stdout": audit, "code": 1}})
+    deps = {d["location"]: d for d in out["dependencies"]}
+    assert code == 1 and out["verdict"] == "VULNERABLE" and set(deps) == {hoisted, nested, deep}
+    assert deps[hoisted]["dependents"] == ["a", "p"] and deps[hoisted]["bump"] == "patch" and deps[hoisted]["vulnerable"]
+    assert deps[nested]["dependents"] == ["b"] and deps[nested]["bump"] == "major" and "vulnerable" not in deps[nested]
+    assert deps[deep]["vulnerable"] and deps[deep]["fix"] == ["1.2.8"]  # affected, though npm outdated doesn't list it
 
 
 def test_python_outdated_and_vulnerable(tmp_path):
@@ -154,19 +168,28 @@ def test_pip_audit_names_what_it_skipped(tmp_path):
     assert code == 0 and out["checks"][1] == {"name": "pip-audit", "status": "PASS", "detail": "skipped myproject"}
 
 
-@pytest.mark.parametrize("changes,why", [
-    ({"pip list --outdated": {"stdout": []}, "pip list --uptodate": {"stdout": []}},  # pip found nothing at all
-     "requests (is the package index reachable?)"),
-    ({"pip list --not-required": {"stdout": TOP + [{"name": "mylib", "version": "0.3.0"}]}},  # from git or a local file
-     "mylib (not on the package index)"),
-    ({"pip list --not-required": {"stdout": TOP + [{"name": "httpx", "version": "1.0.0b1"}]}},  # newer than any release
-     "httpx (1.0.0b1 is a pre-release, and pip list looks only for releases)"),
+@pytest.mark.parametrize("installed,known", [
+    ("zzdemo-local 0.3.0.post1", ""),                                       # a post-release isn't a pre-release
+    ("httpx 1.0.0b1", " (a pre-release)"),
+    ("six 1.17.0+cu118", " (a local version)"),                             # on PyPI, but +cu118 sorts above 1.17.0
+    ("zzdemo-scm 0.1.dev3+gabc1234", " (a pre-release, a local version)"),  # a setuptools_scm build
 ])
-def test_pip_says_why_it_couldnt_check_a_package(tmp_path, changes, why):
-    code, out = gate(tmp_path, PY, py(**changes))
-    assert code == 1 and out["verdict"] == "CHECK FAILED"
-    assert out["checks"][0] == {"name": "pip list --outdated", "status": "FAIL",
-                                "detail": "pip couldn't find the latest version of " + why}
+def test_pip_says_what_it_knows_about_a_package_it_couldnt_check(tmp_path, installed, known):
+    # pip lists only what it found a release at or above the installed version of. Why it didn't is a guess, except
+    # what the version itself says: a private index that's down answers nothing, and pip still exits 0
+    name, version = installed.split()
+    code, out = gate(tmp_path, PY, py(**{"pip list --not-required": {"stdout": TOP + [{"name": name, "version": version}]}}))
+    assert code == 1 and out["verdict"] == "CHECK FAILED" and out["checks"][0]["status"] == "FAIL"
+    detail = out["checks"][0]["detail"]
+    assert detail.startswith(f"pip found no release at or above the installed version of {installed}{known}. Possible causes:")
+    assert "an index that has it is unreachable" in detail
+
+
+def test_pip_found_nothing_at_all(tmp_path):
+    code, out = gate(tmp_path, PY, py(**{"pip list --outdated": {"stdout": []}, "pip list --uptodate": {"stdout": []}}))
+    assert code == 1 and out["checks"][0] == {"name": "pip list --outdated", "status": "FAIL", "detail":
+        "pip found no release at or above the installed version of requests 2.0.0, and none of any other package "
+        "either: is the package index reachable?"}
 
 
 def test_python_up_to_date(tmp_path):
