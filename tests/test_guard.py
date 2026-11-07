@@ -334,10 +334,53 @@ BLOCKED = [
     "gh api graphql --raw-field=query=\"$(cat q.graphql)\"",
     "gh api graphql -f \"$(cat fields.txt)\"",
     "gh api \"$(echo graphql)\" --input -",
+    # a heredoc's delimiter is one word, whatever is in it
+    "git push << ';' --force",
+    "git push << \\; --force",
+    "git push << '(' --force",
+    "git push << ')' --force",
+    "git push << '\n' --force",
+    "gh << ';' pr merge 12",
+    "git commit << ')' --no-verify -m x",
+    "git config core.hooksPath << ';' /dev/null",
+    # an empty here-string word is still a word
+    "git push<<<'' --force",
+    "git push <<<'' --force",
+    # bash runs the $(...) and `...` in an unquoted heredoc's body
+    "cat <<EOF\n$(git push --force)\nEOF",
+    "cat <<EOF\nrun `git push --force` now\nEOF",
+    "cat <<-EOF\n\t$(git push --force)\n\tEOF",
+    "gh pr create --title x --body \"$(cat <<EOF\nsee `git push --force`\nEOF\n)\"",
+    # a heredoc ends only at its exact delimiter line (<<- drops leading tabs, nothing else)
+    "cat <<EOF\nEOF \ncat <<W\nEOF\ngit push --force\nW",
+    "cat <<EOF\n EOF\ncat <<W\nEOF\ngit push --force\nW",
+    "cat <<-EOF\n EOF\ncat <<W\nEOF\ngit push --force\nW",
+    # what xargs passes a shell can be options: -c and a command
+    "echo \"-c 'git push --force'\" | xargs bash",
+    "printf '%s\\0' -c 'git push --force' | xargs -0 bash",
+    "cat args.txt | xargs -L1 bash",
+    "cat args.txt | xargs -n2 -P4 -r -t sh",
+    "cat args.txt | xargs sudo bash",
+    "cat args.txt | xargs bash -s",
+    "cat args.txt | xargs bash -o pipefail",
+    "ls scripts/*.sh | xargs -n1 bash",
+    "find . -name '*.sh' | xargs -I{} bash {}",
+    "echo -c | xargs -I{} bash {} 'git push --force'",
+    "echo -c | xargs --replace=@ bash @ 'git push --force'",
+    "cat args.txt | xargs -J % bash % x",
+    # a process substitution is a word, and its command runs
+    "rm -rf <(true) ~",
+    "diff <(git push --force) x",
 ]
 
 # blocked because they can't be parsed, the only cases allowed to block that way
-UNPARSEABLE = ["echo $(git status"]
+UNPARSEABLE = [
+    "echo $(git status",
+    # a heredoc whose delimiter bash may read another way: its body could hide the commands after it
+    "git push<<'' --force",
+    "cat <<\"a\\\"b\"\nx\na\"b\ngit push --force",
+    "cat <<$EOF\nx\n$EOF\ngit push --force",
+]
 
 ALLOWED = [
     "git push -u origin feat/resume-export",
@@ -437,6 +480,14 @@ ALLOWED = [
     "cat <<'EOF' > notes.md\n# Title\nIt's done; see <<that>> and $(this).\nEOF",
     "cat <<A <<B\nfirst\nA\nsecond; it's fine\nB",
     "cat <<-\tEOF\n\tdon't\n\tEOF",
+    # a quoted or escaped delimiter keeps the body literal
+    "cat <<'EOF'\nrun $(git push --force) or `git push --force`\nEOF",
+    "cat <<\"EOF\"\n$(git push --force)\nEOF",
+    "cat <<\\EOF\n$(git push --force)\nEOF",
+    "cat <<E'O'F\n`git push --force`\nEOF",
+    "cat <<EOF\nescaped \\$(git push --force) and \\`git push --force\\`\nEOF",
+    "cat <<EOF\nbranch: $(git branch --show-current)\nEOF",
+    "diff <(sort a.txt) <(sort b.txt)",
     # a redirect isn't an argument
     "git config --get core.hooksPath 2>/dev/null",
     "git config --get core.hooksPath 2>&1",
@@ -449,8 +500,9 @@ ALLOWED = [
     "echo hi | bash -eo pipefail scripts/each.sh",
     "bash -o pipefail -c 'npm test | tee test.log'",
     "bash -c 'echo \"$0\"' -e",
-    "ls scripts/*.sh | xargs -n1 bash",
-    "find . -name '*.sh' | xargs -I{} bash {}",
+    "ls scripts/*.sh | xargs -n1 bash --",
+    "find . -name '*.sh' | xargs -I{} bash -- {}",
+    "find . -name '*.sh' | xargs -n1 sh -c 'bash -n \"$1\"' _",
     "git ls-files '*.sh' | xargs bash -c 'for f; do bash -n \"$f\"; done' _",
     "echo y | cmd /c del build.log",
     # only a GraphQL endpoint refuses a query from a file, and a $(...) variable can't add a mutation
@@ -563,6 +615,7 @@ PS_BLOCKED = [
     "gh api graphql -f query=\"$(Get-Content q.graphql)\"",
     "gh api graphql -f query=$(Get-Content q.graphql -Raw)",
     "gh api 'gr%61phql' --input -",
+    "gh api \"$(Write-Output graphql)\" --input -",
 ]
 
 PS_UNPARSEABLE = ["git commit -m 'unbalanced", "git push --force`"]

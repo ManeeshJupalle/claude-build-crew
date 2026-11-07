@@ -16,13 +16,16 @@
 - The `rejected-push` eval no longer passes work pushed only to `main`. It also fails a run that copies a ref file into the remote, or pushes with the remote's hooks off. (#53)
 - The guard allows commands it wrongly blocked: (#58)
   - a `git config` read that ends with a redirect, such as `git config --get core.hooksPath 2>/dev/null`, `2>&1` or PowerShell's `2>$null`. A quoted `'2>/dev/null'` is still refused, since git sets the path to it.
-  - `ls scripts/*.sh | xargs -n1 bash`, where xargs gives bash a script's name, not the pipe
+  - `ls scripts/*.sh | xargs -n1 bash --`, where the `--` makes what xargs passes bash a script's name. Without it, xargs could pass `-c` and a command, so that form is still refused.
+  - `diff <(sort a) <(sort b)`: a process substitution is one word, and its command is checked
   - `git pull || pwsh -NoProfile`: PowerShell 7's `||` runs the next command, it isn't a pipe
   - `gh api` REST paths that only contain "graphql", such as `repos/o/graphql-tools/issues --input body.json`
 
 ### Security
 - The guard catches more ways past it: (#58)
-  - a `<<` in quotes or a comment, which was taken for a heredoc and hid the lines after it, and heredocs whose delimiter bash reads another way: `<<<EOF`, `<<E"OF"`, `<<EOF.x`
+  - a `<<` in quotes or a comment, which was taken for a heredoc and hid the lines after it, and heredocs whose delimiter bash reads another way: `<<<EOF`, `<<E"OF"`, `<<EOF.x`, `<< ';'`
+  - heredocs: the `$(…)` and backticks in an unquoted heredoc's body, which bash runs; a closing line with spaces around the delimiter, which bash doesn't count; and a delimiter the guard can't read, such as `<<''` or `<<$EOF`, which is refused
+  - a process substitution that split a command, as in `rm -rf <(true) ~`
   - a shell reading stdin through `/dev/stdin`, a redirect next to it (`bash<<EOF`, `| bash 2>/dev/null`), a shell it runs (`| bash -c bash`), `xargs -I{} bash -c '{}'`, or `cmd` without `/c`
   - bash options that hid the command: `-euo pipefail` before a heredoc, `bash -c -e '…'`, `-oc`, `-co`
   - a redirect that split a command, as in `git push &>/dev/null --force` or `git push 2>&1 --force`

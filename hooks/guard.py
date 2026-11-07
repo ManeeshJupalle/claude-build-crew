@@ -31,7 +31,7 @@ MERGE_GATE = f'bash "{PLUGIN_ROOT}/run.sh" gates/merge_gate.py <PR> --merge'
 SEPARATORS = {"&&", "||", ";", "|", "&", "\n", "|&", ";;"}
 WRAPPERS = {"sudo", "command", "exec", "time", "nice", "ionice", "nohup", "env", "xargs", "timeout",
             "stdbuf", "caffeinate", "chronic"}
-WRAPPER_VALUE_FLAGS = {"-u", "-g", "-n", "-s", "-k", "-c", "-p", "-o", "-e", "-i", "-I", "--signal", "--kill-after",
+WRAPPER_VALUE_FLAGS = {"-u", "-g", "-n", "-s", "-k", "-c", "-p", "-o", "-e", "-i", "-I", "-J", "--signal", "--kill-after",
                        "--user"}
 # git config from the environment, in any case: Windows names ignore case, so git_config_parameters works there.
 # Not HUSKY or SKIP: lowercase skip=1 is an everyday shell variable.
@@ -112,12 +112,14 @@ def local_branch_exists(name: str) -> bool:
         return False
 
 
-def heredoc_word(cmd: str, i: int) -> tuple[str | None, int]:
-    """The delimiter of the heredoc whose << is at i, with its quotes removed (<<'EOF', <<E"OF", <<EOF.x), and where it
-    ends. None for a here-string (<<<), or for a word bash may read another way: empty, or with $ or ` in it."""
+def heredoc_word(cmd: str, i: int) -> tuple[tuple[bool, str, bool] | None, int]:
+    """The heredoc whose << is at i, and where its delimiter ends: (<<-, the delimiter with its quotes removed, whether
+    any of it was quoted, which keeps the body literal), as in <<'EOF', <<E"OF", <<EOF.x. None for a here-string (<<<),
+    or for a word bash may read another way: empty, or with $ or ` in it."""
     if cmd.startswith("<<<", i):
         return None, i + 3
-    j = i + 2 + (cmd[i + 2:i + 3] == "-")
+    dash = cmd[i + 2:i + 3] == "-"
+    j, quoted = i + 2 + dash, False
     while cmd[j:j + 1] in (" ", "\t"):
         j += 1
     word = []
@@ -127,27 +129,29 @@ def heredoc_word(cmd: str, i: int) -> tuple[str | None, int]:
             if end < 0 or cmd[j] == '"' and "\\" in cmd[j + 1:end]:
                 return None, i + 2
             word.append(cmd[j + 1:end])
-            j = end + 1
+            j, quoted = end + 1, True
         else:
+            quoted = quoted or cmd[j] == "\\"
             word.append(cmd[j + 1:j + 2] if cmd[j] == "\\" else cmd[j])
             j += 2 if cmd[j] == "\\" else 1
     text = "".join(word)
-    return (text, j) if text and not set(text) & set("$`") else (None, i + 2)
+    return ((dash, text, quoted), j) if text and not set(text) & set("$`") else (None, i + 2)
 
 
-def heredoc_end(cmd: str, start: int, words: list[str], lines: dict) -> int:
+def heredoc_end(cmd: str, start: int, words: list[tuple[bool, str, bool]], lines: dict) -> int:
     """Where the bodies of heredocs starting at start end: at the end of the last one's closing line, or -1 if one has
-    none, which leaves the rest to be read as commands. lines maps a line's text to where lines with that text end, and
-    is filled on first use: a regex search per heredoc takes quadratic time on a long command, and the hook can't stop
-    a regex at its limit."""
+    none, which leaves the rest to be read as commands. A closing line is the delimiter exactly, after leading tabs for
+    <<-. lines maps a line's text to where lines with that text end, and is filled on first use: a regex search per
+    heredoc takes quadratic time on a long command, and the hook can't stop a regex at its limit."""
     if not lines:
         pos = 0
         for line in cmd.split("\n"):
             pos += len(line)
-            lines.setdefault(line.strip(" \t"), []).append(pos)
+            lines.setdefault((False, line), []).append(pos)
+            lines.setdefault((True, line.lstrip("\t")), []).append(pos)
             pos += 1
-    for w in words:
-        ends = lines.get(w, [])
+    for dash, w, _ in words:
+        ends = lines.get((dash, w), [])
         k = bisect.bisect_left(ends, start)
         if k == len(ends):
             return -1
@@ -223,6 +227,30 @@ def closing(cmd: str, i: int, lines: dict) -> int:
     return -1
 
 
+def substitution(cmd: str, i: int, lines: dict, inner: list[str]) -> int:
+    """Add the command in the $(...) or `...` at i to inner, and return the index just past it."""
+    end = closing(cmd, i, lines)
+    if end < 0:
+        raise ValueError("unbalanced substitution")
+    # inside `...`, \` \$ and \\ stand for the plain characters, so `echo \`git push\`` nests
+    inner.append(re.sub(r"\\([`$\\])", r"\1", cmd[i + 1:end - 1]) if cmd[i] == "`" else cmd[i + 2:end - 1])
+    return end
+
+
+def body_substitutions(cmd: str, i: int, stop: int, lines: dict, inner: list[str]) -> None:
+    """Add the commands in the $(...) and `...` of an unquoted heredoc's body, from i to stop, which bash runs.
+    \\$ and \\` stay text. With several heredocs on a line, all their bodies are read, quoted or not."""
+    while i < stop:
+        if cmd[i] == "\\":
+            i += 2
+        elif cmd[i] == "`" or cmd.startswith("$(", i):
+            i = substitution(cmd, i, lines, inner)
+            if i > stop:
+                raise ValueError("unbalanced substitution")
+        else:
+            i += 1
+
+
 def prescan(cmd: str) -> tuple[str, list[str]]:
     """shlex returns a quoted ';' the same as a bare one, and splits $(...) into words. So before tokenizing, swap
     quoted or escaped separators for placeholders, and turn each $(...) and `...` into one word, returning the
@@ -240,11 +268,7 @@ def prescan(cmd: str) -> tuple[str, list[str]]:
             out.append("$$")
             i += 2
         elif quote != "'" and (c == "`" or cmd.startswith("$(", i)):
-            end = closing(cmd, i, lines)
-            if end < 0:
-                raise ValueError("unbalanced substitution")
-            # inside `...`, \` \$ and \\ stand for the plain characters, so `echo \`git push\`` nests
-            inner.append(re.sub(r"\\([`$\\])", r"\1", cmd[i + 1:end - 1]) if c == "`" else cmd[i + 2:end - 1])
+            end = substitution(cmd, i, lines, inner)
             out.append(SUBST)
             i = end
         elif quote is None and cmd.startswith("$'", i):  # $'...' quotes like '...', but \' is a quote inside it
@@ -264,6 +288,9 @@ def prescan(cmd: str) -> tuple[str, list[str]]:
             quote = None if quote else c
             out.append(c)
             i += 1
+        elif quote is None and cmd.startswith(("<(", ">("), i):  # process substitution: a word, and a command
+            out.append(SUBST)
+            i = substitution(cmd, i, lines, inner)
         elif quote is None and (c in "<>" or cmd.startswith("&>", i) and cmd[i - 1:i] != "&"):  # not &&>
             k = len(out)
             while k and out[k - 1].isdigit():
@@ -273,14 +300,23 @@ def prescan(cmd: str) -> tuple[str, list[str]]:
                 out.append(" ")
             if cmd.startswith("<<", i):
                 word, end = heredoc_word(cmd, i)
+                if word is None and end == i + 2:  # its body could hide the commands after it
+                    raise ValueError("unreadable heredoc delimiter")
                 heredocs += [word] if word else []
+                op = end if word is None else i + 2 + word[0]
             else:
-                end = REDIRECT_OP.match(cmd, i).end()
-            out.append(cmd[i:end].replace("&", PLACEHOLDERS["&"]).replace("|", PLACEHOLDERS["|"]))
+                op = end = REDIRECT_OP.match(cmd, i).end()
+            # the operator keeps its & or |. Its word, if part of it, is one word whatever is in it (<< ';'), and a
+            # space keeps an empty one (<<<'') from merging into the operator and taking the next word as its own
+            out.append(cmd[i:op].replace("&", PLACEHOLDERS["&"]).replace("|", PLACEHOLDERS["|"]) + " "
+                       + "".join(PLACEHOLDERS.get(ch, ch) for ch in cmd[op:end]))
             i = end
         elif c == "\n" and quote is None and heredocs:  # the bodies start on the next line
             out.append(c)
-            end, heredocs = heredoc_end(cmd, i + 1, heredocs, lines), []
+            end = heredoc_end(cmd, i + 1, heredocs, lines)
+            if end >= 0 and not all(quoted for _, _, quoted in heredocs):
+                body_substitutions(cmd, i + 1, end, lines, inner)
+            heredocs = []
             i = end if end >= 0 else i + 1
         else:
             out.append(PLACEHOLDERS[c] if quote and c in PLACEHOLDERS else c)
@@ -547,7 +583,8 @@ def check_gh(args: list[str]) -> str | None:
         endpoint = gh_api_endpoint(args)
         # refusing is safe, so any endpoint that may reach GraphQL counts: a graphql path segment, in any case and
         # encoding (graphql?x=1, /GraphQL, gr%61phql, full URLs, but not schema.graphql), or an endpoint from $(...) ...
-        maybe_graphql = re.search(rf"(^|/)graphql(?![\w-])|{SUBST}", urllib.parse.unquote(endpoint), re.I)
+        # (in PowerShell, a quoted "$(...)" stays text)
+        maybe_graphql = re.search(rf"(^|/)graphql(?![\w-])|{SUBST}|\$\(", urllib.parse.unquote(endpoint), re.I)
         if maybe_graphql and any(a == "--input" or a.startswith("--input=") or
                                  re.match(r"(-i*[fF]|--(raw-)?field=?)?\w*=@", a) for a in args):
             return "A GraphQL query read from stdin or a file can't be verified; pass it with -f query='…'."
@@ -646,6 +683,30 @@ def check_powershell(args: list[str], state: dict, depth: int, stdin: bool = Fal
     return READS_STDIN if stdin else None
 
 
+def with_xargs_input(opts: list[str], args: list[str]) -> list[str]:
+    """A command's arguments once xargs, with options opts, adds what it reads, as -c and a command at worst: after
+    them, or in place of -I's or -i's replace string (one word each), or of BSD -J's (any number of words)."""
+    replace, words, k = None, ["-c", "x"], 0
+    while k < len(opts):
+        t, k = opts[k], k + 1
+        if long_opt(t, "--replace"):
+            replace, words = (t.split("=", 1)[1] if "=" in t else "{}"), ["-c"]
+        for n, ch in enumerate(short_flags(t)):
+            if ch in "adEIJLnPRsS":  # takes a value: the rest of the word, or the next word
+                value = t[n + 2:] or (opts[k] if k < len(opts) else "")
+                k += not t[n + 2:]
+                if ch in "IJ":
+                    replace, words = value, ["-c"] if ch == "I" else ["-c", "x"]
+                break
+            if ch in "eil":  # takes an optional value, in the same word
+                if ch == "i":
+                    replace, words = t[n + 2:] or "{}", ["-c"]
+                break
+    if replace is None:
+        return args + words
+    return [w for a in args for w in (words if a.startswith(replace) else [a])]
+
+
 def check_segment(seg: list[str], state: dict, depth: int, stdin: bool = False) -> str | None:
     check_time()
     rest = strip_prefix(seg)
@@ -666,7 +727,11 @@ def check_segment(seg: list[str], state: dict, depth: int, stdin: bool = False) 
         if xargs is not None:  # xargs passes what it reads as arguments
             if command and (script is None or any(set(short_flags(t)) & set("IiJ") or long_opt(t, "--replace")
                                                   for t in xargs)):
-                return "A shell running a command xargs builds from its input can't be verified."
+                return ("A shell running a command xargs builds from its input can't be verified. Pass the input "
+                        "as arguments instead: xargs -n1 sh -c '… \"$1\" …' _")
+            if not command and shell_operand(with_xargs_input(xargs, args))[1]:
+                return ("What xargs passes a shell could be options, such as -c and a command, so it can't be "
+                        "verified. End the shell's options first: xargs -n1 bash --")
             # the shell gets a script's name, and /dev/null as stdin, unless -a reads the arguments from a file
             stdin = stdin and any("a" in short_flags(t) or long_opt(t, "--arg-file") for t in xargs)
         # bash runs -c's command from its first operand (bash -c -e '…'), fish and csh from the word after -c
