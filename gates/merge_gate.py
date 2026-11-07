@@ -154,13 +154,24 @@ def merge_gate() -> None:
     if not (ok and a.merge):
         emit(out, ok)
     res = gh(*merge_cmd)
-    if res.returncode != 0:
-        out.update(merged=False, error=res.stderr.strip())
+    gh_error = res.stderr.strip() if res.returncode != 0 else ""
+    try:
+        after = gh_json("pr", "view", a.pr, "--json", "state,mergeCommit,headRefOid")
+    except GateError as e:
+        if not gh_error:
+            raise
+        out.update(merged=None, error=f"{gh_error}; then {e}")
         emit(out, False)
-    after = gh_json("pr", "view", a.pr, "--json", "state,mergeCommit")
     out["merged"] = after.get("state") == "MERGED"
     out["merge_commit"] = (after.get("mergeCommit") or {}).get("oid")
-    emit(out, out["merged"])
+    # if a newer head was merged outside the gate, gh skipped its own merge or GitHub refused it
+    landed = out["merged"] and after.get("headRefOid") == pr["headRefOid"]
+    if out["merged"] and not landed:
+        gh_error = "; ".join(filter(None, [f"merged at {after.get('headRefOid')}, not the reviewed head", gh_error]))
+    if gh_error:
+        # gh also exits 1 when the merge worked and only deleting the local branch after it failed
+        out["warning" if landed else "error"] = gh_error
+    emit(out, landed)
 
 
 if __name__ == "__main__":

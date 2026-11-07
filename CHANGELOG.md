@@ -19,6 +19,10 @@
   - When pip finds no release at or above a package's installed version, the message says that and names the possible causes, adding what the version itself shows: a pre-release or a local version, such as `+cu118`. Before, it only asked whether the index was reachable. It still asks that when pip found nothing at all.
   - With npm workspaces, each installed copy of a package is listed, with its `location` and its `dependents`. A vulnerability marks only the copies `npm audit` names, also one that isn't outdated. Before, only the last copy was kept. `/deps` installs an update in each dependent, with `-w` for a workspace.
   - An update from 0.0.x to 0.0.y counts as a major bump, as npm's `^` reads it, so `/deps` skips it unless you name the package. Before, it was a patch.
+- `merge_gate` reports a merge that worked even when gh fails afterwards, for example deleting a local branch that another worktree has checked out. Before, it said `"merged": false` for a PR GitHub had merged. (#56)
+
+### Security
+- `merge_gate` passes only if the PR merged at the head the review approved. Before, it also passed when someone pushed a new commit and merged the PR outside the gate while it ran. (#56)
 
 ## [0.5.0] - 2026-11-05
 ### Added

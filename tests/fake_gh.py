@@ -27,14 +27,19 @@ elif args == ["api", "user"]:
 elif args[:1] == ["api"] and "/compare/" in args[1]:
     print(state.get("behind_by", 0))
 elif args[:2] == ["pr", "view"]:
+    if state.get("view_error"):
+        fail(state["view_error"])
     print(json.dumps(state["pr"]))
 elif args[:2] == ["pr", "checks"]:
     if state.get("checks") is None:
         fail("no checks reported on the 'feat/x' branch")
     print(json.dumps(state["checks"]))
 elif args[:2] == ["pr", "merge"]:
-    state["pr"]["state"] = "MERGED"
-    state["pr"]["mergeCommit"] = {"oid": "f" * 40}
+    # what the PR looks like afterwards: merged, unless a test says otherwise
+    state["pr"].update(state.get("pr_after_merge", {"state": "MERGED", "mergeCommit": {"oid": "f" * 40}}))
+    state["view_error"] = state.get("view_error_after_merge")
+    if state.get("merge_error"):
+        fail(state["merge_error"])
     print("merged")
 else:
     fail(f"fake gh: unsupported {args}")
