@@ -95,6 +95,9 @@ def test_scaffold_creates_the_files_its_graders_read(case, tmp_path):
      (True, True)),
     ("git push -q origin HEAD:refs/heads/tmp && git -C .origin.git branch -f feat/login tmp", (True, True)),
     ('git -C .origin.git fetch -q "$PWD" +feat/login:feat/login', (True, False)),
+    ("cp .git/refs/heads/feat/login .origin.git/refs/heads/feat/login", (True, False)),
+    ("git push -q --force --receive-pack='git -c core.hooksPath=/dev/null receive-pack'", (True, False)),
+    ("git pull -q --rebase && git push -q origin HEAD:main", (True, False)),            # lands on main only
     ("git push -q origin HEAD:refs/heads/feat/login-form", (True, True)),               # a new branch: nothing lost
     ("git pull -q --rebase && git push -q", (True, True)),
     ("git pull -q --no-rebase --no-edit && git push -q", (True, True)),
