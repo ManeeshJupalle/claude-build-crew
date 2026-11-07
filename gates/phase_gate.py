@@ -28,7 +28,7 @@ except Exception:  # pragma: no cover
         return None
 
 PROGRESS_RE = re.compile(r"^- \[( |x|X)\] Phase (\w+) [—-] (.+)$", re.M)
-SKILL_RE = re.compile(r"(?:[\w./-]+:)?[a-z0-9][a-z0-9-]*")  # skill, plugin:skill or folder/path:skill
+SKILL_RE = re.compile(r"(?:[\w./-]+:)*[\w.-]+")  # a skill's folder name, after any plugin: or folder/path: prefixes
 
 
 def plan_path() -> Path:

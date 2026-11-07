@@ -53,6 +53,7 @@ def test_check_ok(repo):
 @pytest.mark.parametrize("line,expected", [
     ("**Skills:** `tdd`, `frontend-design:frontend-design`", ["tdd", "frontend-design:frontend-design"]),
     ("**Skills:** `apps/web:conventions`", ["apps/web:conventions"]),  # a skill scoped to a folder
+    ("**Skills:** `API_Guide`, `frontend:ui:button`", ["API_Guide", "frontend:ui:button"]),  # folder names, nested
     ("**Skills:** none", []),
     ("**Skills:**\n**Notes:** see `db/README.md`", []),  # an empty line doesn't borrow the next line's
 ])
