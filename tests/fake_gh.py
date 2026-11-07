@@ -33,8 +33,12 @@ elif args[:2] == ["pr", "checks"]:
         fail("no checks reported on the 'feat/x' branch")
     print(json.dumps(state["checks"]))
 elif args[:2] == ["pr", "merge"]:
+    if state.get("merge_error"):
+        fail(state["merge_error"])
     state["pr"]["state"] = "MERGED"
     state["pr"]["mergeCommit"] = {"oid": "f" * 40}
+    if state.get("cleanup_error"):  # gh merged, then failed to delete the local branch
+        fail(state["cleanup_error"])
     print("merged")
 else:
     fail(f"fake gh: unsupported {args}")

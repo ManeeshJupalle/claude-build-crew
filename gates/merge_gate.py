@@ -154,12 +154,12 @@ def merge_gate() -> None:
     if not (ok and a.merge):
         emit(out, ok)
     res = gh(*merge_cmd)
-    if res.returncode != 0:
-        out.update(merged=False, error=res.stderr.strip())
-        emit(out, False)
     after = gh_json("pr", "view", a.pr, "--json", "state,mergeCommit")
     out["merged"] = after.get("state") == "MERGED"
     out["merge_commit"] = (after.get("mergeCommit") or {}).get("oid")
+    if res.returncode != 0:
+        # gh also exits 1 when the merge worked and only deleting the local branch after it failed
+        out["warning" if out["merged"] else "error"] = res.stderr.strip()
     emit(out, out["merged"])
 
 

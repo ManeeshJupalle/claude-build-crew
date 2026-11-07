@@ -57,6 +57,18 @@ def test_all_gates_pass_and_merges(tmp_path):
     assert "--match-head-commit" in merge_call and HEAD in merge_call
 
 
+def test_merge_that_worked_is_reported_even_if_cleanup_failed(tmp_path):
+    # gh exits 1 when only deleting the local branch failed, e.g. it's checked out in another worktree
+    err = "failed to delete local branch feat/x: cannot delete branch 'feat/x' used by worktree at 'D:/wt'"
+    code, out, _ = gate(tmp_path, variant(cleanup_error=err), "--merge")
+    assert code == 0 and out["merged"] is True and out["merge_commit"] == "f" * 40 and err in out["warning"]
+
+
+def test_failed_merge_is_reported(tmp_path):
+    code, out, _ = gate(tmp_path, variant(merge_error="Head branch was modified"), "--merge")
+    assert code == 1 and out["merged"] is False and "Head branch was modified" in out["error"]
+
+
 def test_check_only_does_not_merge(tmp_path):
     code, out, st = gate(tmp_path, copy.deepcopy(BASE))
     assert code == 0 and "merged" not in out and not merged(st)
