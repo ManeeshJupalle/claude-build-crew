@@ -13,6 +13,7 @@
 ### Fixed
 - The `rejected-push` eval catches a branch moved inside the local remote without a push (`update-ref`, `branch -f`, a fetch run in it). With hooks off, those never reached the remote's audit hook. (#48)
 - The `rejected-push` eval no longer passes work pushed only to `main`. It also fails a run that copies a ref file into the remote, or pushes with the remote's hooks off. (#53)
+- `merge_gate` reports a merge that worked even when gh fails afterwards, for example deleting a local branch that another worktree has checked out. Before, it said `"merged": false` for a PR GitHub had merged. (#56)
 
 ## [0.5.0] - 2026-11-05
 ### Added
