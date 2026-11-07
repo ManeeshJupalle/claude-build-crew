@@ -49,19 +49,37 @@ def test_check_ok(repo):
     assert code == 0 and out["done_when"] == ["test -f marker.txt", "true"] and out["skills"] == []
 
 
+@pytest.mark.parametrize("eol", ["\n", "\r\n"], ids=["LF", "CRLF"])
 @pytest.mark.parametrize("line,expected", [
     ("**Skills:** `tdd`, `frontend-design:frontend-design`", ["tdd", "frontend-design:frontend-design"]),
+    ("**Skills:** `apps/web:conventions`", ["apps/web:conventions"]),  # a skill scoped to a folder
+    ("**Skills:** `API_Guide`, `frontend:ui:button`", ["API_Guide", "frontend:ui:button"]),  # folder names, nested
     ("**Skills:** none", []),
     ("**Skills:**\n**Notes:** see `db/README.md`", []),  # an empty line doesn't borrow the next line's
 ])
-def test_check_lists_the_phases_skills(repo, line, expected):
+def test_check_lists_the_phases_skills(repo, line, expected, eol):
+    plan = PLAN.replace("**Work in:** `src/db`\n", f"**Work in:** `src/db`\n{line}\n")
+    (repo / "docs").mkdir()
+    (repo / "docs" / "PLAN.md").write_bytes(plan.replace("\n", eol).encode("utf-8"))
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "docs: plan")
+    code, out = run_gate("phase_gate.py", "check", "1", cwd=repo, env={"CLAUDE_PROJECT_DIR": str(repo)})
+    assert code == 0 and out["skills"] == expected and out["done_when"] == ["test -f marker.txt", "true"]
+
+
+@pytest.mark.parametrize("line,error", [
+    ("**Skills:** `tdd`\n**Skills:** `frontend-design:frontend-design`", "more than one **Skills:** line"),
+    ("**Skills:** `tdd` (see `docs/x.md`)", "`docs/x.md`"),
+    ("**Skills:** `tdd`, `npm test`", "`npm test`"),
+])
+def test_check_refuses_a_malformed_skills_line(repo, line, error):
     plan = PLAN.replace("**Work in:** `src/db`\n", f"**Work in:** `src/db`\n{line}\n")
     (repo / "docs").mkdir()
     (repo / "docs" / "PLAN.md").write_text(plan, encoding="utf-8")
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "-m", "docs: plan")
     code, out = run_gate("phase_gate.py", "check", "1", cwd=repo, env={"CLAUDE_PROJECT_DIR": str(repo)})
-    assert code == 0 and out["skills"] == expected and out["done_when"] == ["test -f marker.txt", "true"]
+    assert code == 1 and error in out["error"], out
 
 
 def test_check_blocks_unmet_dependency(repo):

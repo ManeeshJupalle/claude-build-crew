@@ -28,6 +28,7 @@ except Exception:  # pragma: no cover
         return None
 
 PROGRESS_RE = re.compile(r"^- \[( |x|X)\] Phase (\w+) [—-] (.+)$", re.M)
+SKILL_RE = re.compile(r"(?:[\w./-]+:)*[\w.-]+")  # a skill's folder name, after any plugin: or folder/path: prefixes
 
 
 def plan_path() -> Path:
@@ -71,7 +72,7 @@ def done_when(sec: str) -> list[str]:
 
 def skills(sec: str) -> list[str]:
     m = re.search(r"^\*\*Skills:\*\*[ \t]*(.*)$", sec, re.M)
-    return re.findall(r"`([^`\s]+)`", m.group(1)) if m else []
+    return re.findall(r"`([^`]+)`", m.group(1)) if m else []
 
 
 def cmd_check(pid: str, text: str, phases: dict) -> None:
@@ -85,6 +86,13 @@ def cmd_check(pid: str, text: str, phases: dict) -> None:
     missing = [d for d in deps(section(text, pid)) if not phases.get(d, {}).get("done")]
     if missing:
         out["error"] = "dependencies not done: " + ", ".join(f"Phase {d}" for d in missing)
+        emit(out, False)
+    if len(re.findall(r"^\*\*Skills:\*\*", section(text, pid), re.M)) > 1:
+        out["error"] = "more than one **Skills:** line: list the phase's skills on one line"
+        emit(out, False)
+    bad = [s for s in skills(section(text, pid)) if not SKILL_RE.fullmatch(s)]
+    if bad:
+        out["error"] = "not skill names on the **Skills:** line: " + ", ".join(f"`{s}`" for s in bad)
         emit(out, False)
     dirty = git("status", "--porcelain")
     if dirty:
