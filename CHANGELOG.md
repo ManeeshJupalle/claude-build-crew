@@ -12,6 +12,19 @@
 
 ### Fixed
 - The `rejected-push` eval catches a branch moved inside the local remote without a push (`update-ref`, `branch -f`, a fetch run in it). With hooks off, those never reached the remote's audit hook. (#48)
+- The guard allows commands it wrongly blocked: (#58)
+  - a `git config` read that ends with a redirect, such as `git config --get core.hooksPath 2>/dev/null`, `2>&1` or PowerShell's `2>$null`. A quoted `'2>/dev/null'` is still refused, since git sets the path to it.
+  - `ls scripts/*.sh | xargs -n1 bash`, where xargs gives bash a script's name, not the pipe
+  - `git pull || pwsh -NoProfile`: PowerShell 7's `||` runs the next command, it isn't a pipe
+  - `gh api` REST paths that only contain "graphql", such as `repos/o/graphql-tools/issues --input body.json`
+
+### Security
+- The guard catches more ways past it: (#58)
+  - a `<<` in quotes or a comment, which was taken for a heredoc and hid the lines after it, and heredocs whose delimiter bash reads another way: `<<<EOF`, `<<E"OF"`, `<<EOF.x`
+  - a shell reading stdin through `/dev/stdin`, a redirect next to it (`bash<<EOF`, `| bash 2>/dev/null`), a shell it runs (`| bash -c bash`), `xargs -I{} bash -c '{}'`, or `cmd` without `/c`
+  - bash options that hid the command: `-euo pipefail` before a heredoc, `bash -c -e '…'`, `-oc`, `-co`
+  - a redirect that split a command, as in `git push &>/dev/null --force` or `git push 2>&1 --force`
+  - a GraphQL query built from `$(…)`, or sent to an encoded endpoint such as `gr%61phql`
 
 ## [0.5.0] - 2026-11-05
 ### Added
