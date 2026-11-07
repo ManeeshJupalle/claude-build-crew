@@ -6,12 +6,17 @@
 
 ### Changed
 - When the guard blocks a merge, it gives the full `merge_gate` command with the plugin's path. Before, an agent had to find the plugin's folder itself. (#50)
+- When `/deps` runs `npm audit fix`, its report lists every other package that changed in `package-lock.json`. `npm audit fix` fixes all it can, not just the one dependency `/deps` picked. (#55)
 
 ### Removed
 - The failing-hook eval case. `claude plugin eval` turns git hooks off for the agent's commands, so the case couldn't tell the arms apart. (#48)
 
 ### Fixed
 - The `rejected-push` eval catches a branch moved inside the local remote without a push (`update-ref`, `branch -f`, a fetch run in it). With hooks off, those never reached the remote's audit hook. (#48)
+- `deps.py` fixes for npm and pip: (#55)
+  - When pip can't find the latest version of a package, it says why: the package isn't on the index, or it's a pre-release, since `pip list` looks only for releases. Before, it always asked whether the index was reachable. It still asks that when pip found nothing at all.
+  - With npm workspaces, each installed copy of a package is listed, with its `location`. Before, only the last one was kept.
+  - An update from 0.0.x to 0.0.y counts as a major bump, as npm's `^` reads it, so `/deps` skips it unless you name the package. Before, it was a patch.
 
 ## [0.5.0] - 2026-11-05
 ### Added
