@@ -72,13 +72,13 @@ def failed(name: str, res) -> dict:
             "detail": "\n".join((res.stdout + res.stderr).strip().splitlines()[-15:]) or f"exit {res.returncode}"}
 
 
-def copy_at(root: Path, location) -> str | None:
-    """A copy's path from the root, as npm audit gives it. npm outdated gives an absolute path, but masks what looks like
-    a secret in it, such as a UUID in a folder's name, as ***: so take the parts below the root's depth."""
+def copy_at(depth: int, location) -> str | None:
+    """A copy's path from npm's root, as npm audit gives it. npm outdated gives an absolute path, but masks what looks
+    like a secret in it, such as a UUID in a folder's name, as ***: so take the parts below the root's depth."""
     if not location:
         return None
     parts = Path(location).parts
-    return "/".join(parts[len(Path(os.path.realpath(root)).parts):] if Path(location).is_absolute() else parts)
+    return "/".join(parts[depth:] if Path(location).is_absolute() else parts)
 
 
 def npm_deps(root: Path, found: dict, checks: list) -> None:
@@ -88,7 +88,13 @@ def npm_deps(root: Path, found: dict, checks: list) -> None:
     if not npm:
         checks += [{"name": n, "status": "SKIPPED", "detail": "npm not installed"} for n in ("npm outdated", "npm audit")]
         return
-    res, data = call([*npm, "outdated", "--json"], root)
+    # npm works from its own root, which from a workspace's folder is the workspace root above it: its paths start there
+    res = run([*npm, "prefix"], timeout=60, cwd=str(root))
+    if res.returncode or not res.stdout.strip():
+        checks.append(failed("npm prefix", res))
+        return
+    depth = len(Path(res.stdout.strip().splitlines()[-1]).parts)
+    res, data = call([*npm, "outdated", "--json", "--long"], root)  # --long adds the path -w takes, dependedByLocation
     # exit 1 only means something is outdated; npm reports its own errors as {"error": ...}
     if res.returncode not in (0, 1) or not isinstance(data, dict) or "error" in data or (res.returncode and not data):
         checks.append(failed("npm outdated", res))
@@ -102,12 +108,12 @@ def npm_deps(root: Path, found: dict, checks: list) -> None:
             checks.append({"name": "npm outdated", "status": "PASS"})
             for n, e in entries:  # with workspaces, a name is listed for each package that depends on it
                 if e.get("latest") and e["latest"] != e["current"]:
-                    at = copy_at(root, e.get("location"))
+                    at = copy_at(depth, e.get("location"))
                     d = found.setdefault(("npm", n, at), {
                         "ecosystem": "npm", "name": n, "current": e["current"], "latest": e["latest"],
                         "bump": bump(e["current"], e["latest"]), **({"location": at} if at else {})})
-                    if e.get("dependent"):  # a workspace, or the root project by its folder's name
-                        d["dependents"] = sorted({*d.get("dependents", []), e["dependent"]})
+                    if "dependedByLocation" in e:  # a workspace's path from npm's root, or "" for the root project
+                        d["dependents"] = sorted({*d.get("dependents", []), e["dependedByLocation"] or "."})
     res, data = call([*npm, "audit", "--json"], root)
     vulns = data.get("vulnerabilities") if isinstance(data, dict) else None
     if res.returncode not in (0, 1) or not isinstance(vulns, dict) or "error" in data:
@@ -116,7 +122,7 @@ def npm_deps(root: Path, found: dict, checks: list) -> None:
     checks.append({"name": "npm audit", "status": "PASS"})
     for n, v in vulns.items():
         for node in v.get("nodes") or [None]:  # each affected copy, also one npm outdated didn't list
-            at = copy_at(root, node)
+            at = copy_at(depth, node)
             d = found.setdefault(("npm", n, at), {"ecosystem": "npm", "name": n, **({"location": at} if at else {})})
             d.update(vulnerable=True, severity=v.get("severity"), direct=bool(v.get("isDirect")),
                      **npm_fix(n, v.get("fixAvailable")),

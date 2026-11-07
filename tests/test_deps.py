@@ -49,7 +49,7 @@ def gate(tmp_path, files, responses, fake_python=True, fake_audit=True, env=None
     for name, text in files.items():
         (tmp_path / name).write_text(text, encoding="utf-8")
     sp = tmp_path / "fake.json"
-    sp.write_text(json.dumps(responses), encoding="utf-8")
+    sp.write_text(json.dumps({"prefix": {"stdout": f"{tmp_path}\n"}, **responses}), encoding="utf-8")  # npm's root
     fake = f'"{sys.executable}" "{FAKE}"'
     return run_gate("deps.py", cwd=tmp_path, env={
         "CLAUDE_PROJECT_DIR": str(tmp_path), "FAKE_TOOL_STATE": str(sp), "BUILD_CREW_NPM": fake,
@@ -106,31 +106,53 @@ def test_deps_lists_what_npm_audit_fix_changed():
 
 
 def test_deps_updates_an_npm_copy_in_each_workspace_that_depends_on_it():
-    # `npm install` at the root changes the root's package.json, and a workspace's own pin keeps the old version
-    assert "`dependents`" in deps_step(4) and "-w <" in deps_step(4)
+    # `npm install` at the root changes the root's package.json, and a workspace's own pin keeps the old version.
+    # `dependents` are paths from npm's root, and `-w` reads a path from where npm runs
+    assert "`dependents`" in deps_step(4) and "-w <" in deps_step(4) and "`npm prefix`" in deps_step(4)
 
 
 def test_npm_workspaces_list_each_copy(tmp_path):
     # as npm 11 gives it: the root (p) and workspace a pin minimist 1.2.5, hoisted, and b pins 0.2.4, nested. npm outdated
-    # lists each dependent with the copy's absolute path, masking a UUID in it as ***; npm audit lists the affected
-    # copies by their path from the root
+    # --long lists each dependent with its path from the root and the copy's absolute path, masking a UUID in it as ***
+    # (as npm prefix does); npm audit lists the affected copies by their path from the root
     hoisted, nested, deep = "node_modules/minimist", "packages/b/node_modules/minimist", "node_modules/mkdirp/node_modules/minimist"
     masked = tmp_path.parent / "***"
-    minimist = [{"current": "1.2.5", "wanted": "1.2.5", "latest": "1.2.8", "dependent": "a", "location": str(masked / hoisted)},
-                {"current": "0.2.4", "wanted": "0.2.4", "latest": "1.2.8", "dependent": "b", "location": str(masked / nested)},
-                {"current": "1.2.5", "wanted": "1.2.5", "latest": "1.2.8", "dependent": "p", "location": str(masked / hoisted)}]
+    minimist = [{"current": current, "wanted": current, "latest": "1.2.8", "dependent": by.split("/")[-1] or "p",
+                 "dependedByLocation": by, "location": str(masked / path)}
+                for current, by, path in (("1.2.5", "packages/a", hoisted), ("0.2.4", "packages/b", nested), ("1.2.5", "", hoisted))]
     audit = {"vulnerabilities": {"minimist": {
         "name": "minimist", "severity": "critical", "isDirect": True, "range": "1.0.0 - 1.2.5",
         "nodes": ["node_modules/minimist", "node_modules/mkdirp/node_modules/minimist"],  # mkdirp's isn't outdated
         "fixAvailable": {"name": "minimist", "version": "1.2.8", "isSemVerMajor": False},
         "via": [{"source": 1097678, "url": "https://github.com/advisories/GHSA-xvch-5gv4-984h", "range": ">=1.0.0 <1.2.6"}]}}}
-    code, out = gate(tmp_path, NPM, {"outdated": {"stdout": {"minimist": minimist}, "code": 1},
+    code, out = gate(tmp_path, NPM, {"prefix": {"stdout": f"{masked}\n"}, "outdated": {"stdout": {"minimist": minimist}, "code": 1},
                                      "audit": {"stdout": audit, "code": 1}})
     deps = {d["location"]: d for d in out["dependencies"]}
     assert code == 1 and out["verdict"] == "VULNERABLE" and set(deps) == {hoisted, nested, deep}
-    assert deps[hoisted]["dependents"] == ["a", "p"] and deps[hoisted]["bump"] == "patch" and deps[hoisted]["vulnerable"]
-    assert deps[nested]["dependents"] == ["b"] and deps[nested]["bump"] == "major" and "vulnerable" not in deps[nested]
+    assert deps[hoisted]["dependents"] == [".", "packages/a"] and deps[hoisted]["bump"] == "patch" and deps[hoisted]["vulnerable"]
+    assert deps[nested]["dependents"] == ["packages/b"] and deps[nested]["bump"] == "major" and "vulnerable" not in deps[nested]
     assert deps[deep]["vulnerable"] and deps[deep]["fix"] == ["1.2.8"]  # affected, though npm outdated doesn't list it
+
+
+def test_npm_paths_are_from_npms_root(tmp_path):
+    # as npm 11 gives it run from ws3/packages/b-dir: npm works from the workspace root above it and lists only b-dir's
+    # dependencies. minimist is nested in b-dir, and left-pad is hoisted to the root's node_modules
+    project = tmp_path / "packages" / "b-dir"
+    project.mkdir(parents=True)
+    (project / "package.json").write_text('{"name": "@scope/b"}', encoding="utf-8")
+    outdated = {name: {"current": current, "wanted": current, "latest": latest, "dependent": "b-dir",
+                       "dependedByLocation": "packages/b-dir", "location": str(tmp_path / path)}
+                for name, current, latest, path in (("minimist", "1.2.5", "1.2.8", "packages/b-dir/node_modules/minimist"),
+                                                    ("left-pad", "1.1.0", "1.3.0", "node_modules/left-pad"))}
+    audit = {"vulnerabilities": {"minimist": {
+        "name": "minimist", "severity": "critical", "isDirect": True, "nodes": ["packages/b-dir/node_modules/minimist"],
+        "fixAvailable": {"name": "minimist", "version": "1.2.8", "isSemVerMajor": False}, "via": []}}}
+    code, out = gate(tmp_path, {}, {"outdated": {"stdout": outdated, "code": 1}, "audit": {"stdout": audit, "code": 1}},
+                     env={"CLAUDE_PROJECT_DIR": str(project)})
+    assert [(d["name"], d["location"], d.get("vulnerable"), d["dependents"]) for d in out["dependencies"]] == [
+        ("minimist", "packages/b-dir/node_modules/minimist", True, ["packages/b-dir"]),
+        ("left-pad", "node_modules/left-pad", None, ["packages/b-dir"])]
+    assert ["prefix"] in calls(tmp_path) and ["outdated", "--json", "--long"] in calls(tmp_path)
 
 
 def test_python_outdated_and_vulnerable(tmp_path):
@@ -234,6 +256,8 @@ def test_npm_missing_is_skipped(tmp_path):
     {"outdated": {"stdout": ""}, "audit": {"stdout": AUDIT_CLEAN, "code": 2}},                        # audit's unexpected exit
     {"outdated": {"stdout": {"x": [{"current": "1.0.0", "latest": "1.0.1"}, {"latest": "1.0.1"}]}, "code": 1},
      "audit": {"stdout": AUDIT_CLEAN}},                                                               # a workspace not installed
+    {"prefix": {"code": 1, "stderr": "npm ERR! boom"}, "outdated": {"stdout": ""}, "audit": {"stdout": AUDIT_CLEAN}},  # no prefix
+    {"prefix": {"stdout": ""}, "outdated": {"stdout": ""}, "audit": {"stdout": AUDIT_CLEAN}},       # no root, no paths
 ])
 def test_a_failed_npm_check_is_never_up_to_date(tmp_path, responses):
     code, out = gate(tmp_path, NPM, responses)
