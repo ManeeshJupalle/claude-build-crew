@@ -371,6 +371,14 @@ BLOCKED = [
     # a process substitution is a word, and its command runs
     "rm -rf <(true) ~",
     "diff <(git push --force) x",
+    # a script read from one is as unverifiable as a pipe into the shell
+    "bash <(echo 'git push --force')",
+    "sh <(cat steps.sh)",
+    "bash -e <(cat steps.sh) arg",
+    "source <(echo 'git push --force')",
+    ". <(cat env.sh)",
+    "pwsh -NoProfile <(cat steps.ps1)",
+    "bash -c <(cat steps.sh)",
 ]
 
 # blocked because they can't be parsed, the only cases allowed to block that way

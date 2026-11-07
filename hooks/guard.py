@@ -54,6 +54,7 @@ REDIRECT_OP = re.compile(r"&>>?|<>|<&|>>|>&|>\||[<>]")  # its & or | is part of 
 REDIRECT = re.compile(rf"\d*(<<-|[<>]+[{PLACEHOLDERS['&']}{PLACEHOLDERS['|']}]?)|{PLACEHOLDERS['&']}>+")
 STDIN_PATH = re.compile(r"(^|/)(dev/(stdin|fd/\d+)|proc/[^/]+/fd/\d+)$")
 SUBST = ""  # stands for a $(...) or `...` substitution, or a PowerShell group, checked on its own
+PROCSUB = ""  # stands for a <(...) or >(...): a file whose contents a command makes, checked on its own
 POWERSHELLS = {"pwsh", "powershell"}
 PS_VALUE_PARAMS = ("executionpolicy", "windowstyle", "inputformat", "outputformat", "version", "psconsolefile",
                    "configurationname", "configurationfile", "workingdirectory", "settingsfile", "custompipename")
@@ -289,7 +290,7 @@ def prescan(cmd: str) -> tuple[str, list[str]]:
             out.append(c)
             i += 1
         elif quote is None and cmd.startswith(("<(", ">("), i):  # process substitution: a word, and a command
-            out.append(SUBST)
+            out.append(PROCSUB)
             i = substitution(cmd, i, lines, inner)
         elif quote is None and (c in "<>" or cmd.startswith("&>", i) and cmd[i - 1:i] != "&"):  # not &&>
             k = len(out)
@@ -724,6 +725,8 @@ def check_segment(seg: list[str], state: dict, depth: int, stdin: bool = False) 
     args = seg[1:]
     if prog in SHELLS:
         script, command = shell_operand(args)
+        if PROCSUB in (script or ""):  # bash <(…) runs what the command prints
+            return "A shell running a script from a process substitution can't be verified."
         if xargs is not None:  # xargs passes what it reads as arguments
             if command and (script is None or any(set(short_flags(t)) & set("IiJ") or long_opt(t, "--replace")
                                                   for t in xargs)):
@@ -743,6 +746,8 @@ def check_segment(seg: list[str], state: dict, depth: int, stdin: bool = False) 
         if stdin and not script and not commands:  # echo 'git push --force' | bash, bash <<'EOF'
             return READS_STDIN
     if prog in POWERSHELLS:
+        if any(PROCSUB in a for a in args):  # pwsh <(…) runs it as a script file
+            return "A shell running a script from a process substitution can't be verified."
         return check_powershell(args, state, depth, stdin)
     if prog == "cmd":  # with no /c, or with /k, cmd runs what it reads from stdin
         for k, a in enumerate(args):
@@ -752,6 +757,8 @@ def check_segment(seg: list[str], state: dict, depth: int, stdin: bool = False) 
                 return reason or (READS_STDIN if stdin and m.group()[-1] in "kK" else None)
         if stdin:
             return READS_STDIN
+    if prog in ("source", ".") and args and PROCSUB in args[0]:
+        return "Sourcing a process substitution can't be verified."
     if prog == "eval":
         return check(" ".join(args), depth + 1, state, stdin=stdin)
     if prog == "git":
