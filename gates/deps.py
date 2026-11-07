@@ -33,7 +33,9 @@ def version_key(v: str) -> list[int]:
 
 def bump(current: str, latest: str) -> str:
     cur, new = ((version_key(v) + [0, 0, 0])[:3] for v in (current, latest))
-    if new[0] != cur[0] or (cur[0] == 0 and new[1] != cur[1]):  # under 1.0, a minor bump may break
+    # as npm's ^: only what's right of the first non-zero part may change. ^1.2.3 is <2.0.0, ^0.2.3 <0.3.0, ^0.0.3 <0.0.4
+    lead = next((i for i, n in enumerate(cur) if n), 2)
+    if new[:lead + 1] != cur[:lead + 1]:
         return "major"
     return "minor" if new[1] != cur[1] else "patch"
 
@@ -70,6 +72,15 @@ def failed(name: str, res) -> dict:
             "detail": "\n".join((res.stdout + res.stderr).strip().splitlines()[-15:]) or f"exit {res.returncode}"}
 
 
+def copy_at(depth: int, location) -> str | None:
+    """A copy's path from npm's root, as npm audit gives it. npm outdated gives an absolute path, but masks what looks
+    like a secret in it, such as a UUID in a folder's name, as ***: so take the parts below the root's depth."""
+    if not location:
+        return None
+    parts = Path(location).parts
+    return "/".join(parts[depth:] if Path(location).is_absolute() else parts)
+
+
 def npm_deps(root: Path, found: dict, checks: list) -> None:
     if not (root / "package.json").exists():
         return
@@ -77,7 +88,13 @@ def npm_deps(root: Path, found: dict, checks: list) -> None:
     if not npm:
         checks += [{"name": n, "status": "SKIPPED", "detail": "npm not installed"} for n in ("npm outdated", "npm audit")]
         return
-    res, data = call([*npm, "outdated", "--json"], root)
+    # npm works from its own root, which from a workspace's folder is the workspace root above it: its paths start there
+    res = run([*npm, "prefix"], timeout=60, cwd=str(root))
+    if res.returncode or not res.stdout.strip():
+        checks.append(failed("npm prefix", res))
+        return
+    depth = len(Path(res.stdout.strip().splitlines()[-1]).parts)
+    res, data = call([*npm, "outdated", "--json", "--long"], root)  # --long adds the path -w takes, dependedByLocation
     # exit 1 only means something is outdated; npm reports its own errors as {"error": ...}
     if res.returncode not in (0, 1) or not isinstance(data, dict) or "error" in data or (res.returncode and not data):
         checks.append(failed("npm outdated", res))
@@ -89,10 +106,14 @@ def npm_deps(root: Path, found: dict, checks: list) -> None:
                            "detail": "not installed: " + ", ".join(missing) + " (run `npm ci` first)"})
         else:
             checks.append({"name": "npm outdated", "status": "PASS"})
-            for n, e in entries:
+            for n, e in entries:  # with workspaces, a name is listed for each package that depends on it
                 if e.get("latest") and e["latest"] != e["current"]:
-                    found[("npm", n)] = {"ecosystem": "npm", "name": n, "current": e["current"],
-                                         "latest": e["latest"], "bump": bump(e["current"], e["latest"])}
+                    at = copy_at(depth, e.get("location"))
+                    d = found.setdefault(("npm", n, at), {
+                        "ecosystem": "npm", "name": n, "current": e["current"], "latest": e["latest"],
+                        "bump": bump(e["current"], e["latest"]), **({"location": at} if at else {})})
+                    if "dependedByLocation" in e:  # a workspace's path from npm's root, or "" for the root project
+                        d["dependents"] = sorted({*d.get("dependents", []), e["dependedByLocation"] or "."})
     res, data = call([*npm, "audit", "--json"], root)
     vulns = data.get("vulnerabilities") if isinstance(data, dict) else None
     if res.returncode not in (0, 1) or not isinstance(vulns, dict) or "error" in data:
@@ -100,9 +121,12 @@ def npm_deps(root: Path, found: dict, checks: list) -> None:
         return
     checks.append({"name": "npm audit", "status": "PASS"})
     for n, v in vulns.items():
-        d = found.setdefault(("npm", n), {"ecosystem": "npm", "name": n})
-        d.update(vulnerable=True, severity=v.get("severity"), direct=bool(v.get("isDirect")), **npm_fix(n, v.get("fixAvailable")),
-                 advisories=sorted({a.get("url") or str(a.get("source")) for a in v.get("via", []) if isinstance(a, dict)}))
+        for node in v.get("nodes") or [None]:  # each affected copy, also one npm outdated didn't list
+            at = copy_at(depth, node)
+            d = found.setdefault(("npm", n, at), {"ecosystem": "npm", "name": n, **({"location": at} if at else {})})
+            d.update(vulnerable=True, severity=v.get("severity"), direct=bool(v.get("isDirect")),
+                     **npm_fix(n, v.get("fixAvailable")),
+                     advisories=sorted({a.get("url") or str(a.get("source")) for a in v.get("via", []) if isinstance(a, dict)}))
 
 
 def npm_fix(name: str, fa) -> dict:
@@ -117,6 +141,13 @@ def npm_fix(name: str, fa) -> dict:
 
 def canon(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def version_says(version: str) -> str:
+    """By PEP 440, 1.0b1 and 0.1.dev3 are pre-releases, and 1.0+cu118 is a local version."""
+    facts = [fact for fact, hit in (("a pre-release", re.search(r"(a|b|rc|dev)\d", version.split("+")[0])),
+                                    ("a local version", "+" in version)) if hit]
+    return f" ({', '.join(facts)})" if facts else ""
 
 
 def venv_tools(root: Path) -> set[str]:
@@ -149,12 +180,20 @@ def python_deps(root: Path, found: dict, checks: list) -> None:
         checks.append(failed("pip list --outdated", bad))
     else:
         direct = {canon(e["name"]) for e in top} - tools
-        # pip leaves out what it couldn't look up (an unreachable index), so it must be in one list or the other
+        # pip lists only what it found a release at or above the installed version of, so each must be in one list or
+        # the other. Why one isn't is a guess (an index that's down answers nothing, and pip still exits 0), except for
+        # what its version says
         unchecked = sorted(direct - {canon(e["name"]) for e in data + current})
         if unchecked:
+            version = {canon(e["name"]): e["version"] for e in top}
             checks.append({"name": "pip list --outdated", "status": "FAIL",
-                           "detail": "pip couldn't find the latest version of " + ", ".join(unchecked) +
-                                     " (is the package index reachable?)"})
+                           "detail": "pip found no release at or above the installed version of " +
+                                     ", ".join(f"{n} {version[n]}" + version_says(version[n]) for n in unchecked) +
+                                     (", and none of any other package either: is the package index reachable?"
+                                      if not (data or current) else
+                                      ". Possible causes: it isn't on the package index, an index that has it is "
+                                      "unreachable, or the installed version is newer than any release there (from git, "
+                                      "a local version or a pre-release)")})
         else:
             checks.append({"name": "pip list --outdated", "status": "PASS"})
         for e in data:

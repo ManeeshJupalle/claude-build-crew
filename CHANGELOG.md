@@ -6,6 +6,7 @@
 
 ### Changed
 - When the guard blocks a merge, it gives the full `merge_gate` command with the plugin's path. Before, an agent had to find the plugin's folder itself. (#50)
+- When `/deps` runs `npm audit fix`, its report lists every other package that changed in `package-lock.json`. `npm audit fix` fixes all it can, not just the one dependency `/deps` picked. (#55)
 
 ### Removed
 - The failing-hook eval case. `claude plugin eval` turns git hooks off for the agent's commands, so the case couldn't tell the arms apart. (#48)
@@ -14,6 +15,10 @@
 - `phase_gate.py check` fails when a phase has a second `**Skills:**` line, or a backticked word on it that isn't a skill name. Before, it ignored the second line and took a path like `docs/x.md` for a skill. `/build-phase` reads a skill's description before invoking it, and skips one that acts instead of advising. (#54)
 - The `rejected-push` eval catches a branch moved inside the local remote without a push (`update-ref`, `branch -f`, a fetch run in it). With hooks off, those never reached the remote's audit hook. (#48)
 - The `rejected-push` eval no longer passes work pushed only to `main`. It also fails a run that copies a ref file into the remote, or pushes with the remote's hooks off. (#53)
+- `deps.py` fixes for npm and pip: (#55)
+  - When pip finds no release at or above a package's installed version, the message says that and names the possible causes, adding what the version itself shows: a pre-release or a local version, such as `+cu118`. Before, it only asked whether the index was reachable. It still asks that when pip found nothing at all.
+  - With npm workspaces, each installed copy of a package is listed, with its `location` and its `dependents`, both as paths from npm's root, also when run from a workspace's folder. A vulnerability marks only the copies `npm audit` names, also one that isn't outdated. Before, only the last copy was kept. `/deps` installs an update in each dependent, with `-w` for a workspace.
+  - An update from 0.0.x to 0.0.y counts as a major bump, as npm's `^` reads it, so `/deps` skips it unless you name the package. Before, it was a patch.
 - `merge_gate` reports a merge that worked even when gh fails afterwards, for example deleting a local branch that another worktree has checked out. Before, it said `"merged": false` for a PR GitHub had merged. (#56)
 - The guard allows commands it wrongly blocked: (#58)
   - a `git config` read that ends with a redirect, such as `git config --get core.hooksPath 2>/dev/null`, `2>&1` or PowerShell's `2>$null`. A quoted `'2>/dev/null'` is still refused, since git sets the path to it.
