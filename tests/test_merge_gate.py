@@ -57,6 +57,36 @@ def test_all_gates_pass_and_merges(tmp_path):
     assert "--match-head-commit" in merge_call and HEAD in merge_call
 
 
+def test_merge_that_worked_is_reported_even_if_cleanup_failed(tmp_path):
+    # gh v2.89 merges, then exits 1 if it can't delete the local branch, e.g. one checked out in another worktree
+    err = "failed to delete local branch feat/x: cannot delete branch 'feat/x' used by worktree at 'D:/wt'"
+    code, out, _ = gate(tmp_path, variant(merge_error=err), "--merge")
+    assert code == 0 and out["merged"] is True and out["merge_commit"] == "f" * 40 and err in out["warning"]
+
+
+def test_failed_merge_is_reported(tmp_path):
+    code, out, _ = gate(tmp_path, variant(merge_error="Head branch was modified", pr_after_merge={}), "--merge")
+    assert code == 1 and out["merged"] is False and "Head branch was modified" in out["error"]
+
+
+OTHER = "b" * 40
+
+
+@pytest.mark.parametrize("merge_error", [None, "Head branch was modified"])
+def test_merged_at_another_head_fails(tmp_path, merge_error):
+    # pushed to and merged outside the gate: gh skips its own merge, or GitHub refuses it
+    after = {"state": "MERGED", "headRefOid": OTHER, "mergeCommit": {"oid": "e" * 40}}
+    code, out, _ = gate(tmp_path, variant(pr_after_merge=after, merge_error=merge_error), "--merge")
+    assert code == 1 and out["merged"] is True and OTHER in out["error"] and (merge_error or "") in out["error"]
+
+
+def test_merge_error_survives_a_failed_view(tmp_path):
+    state = variant(merge_error="Head branch was modified", pr_after_merge={}, view_error_after_merge="HTTP 502")
+    code, out, _ = gate(tmp_path, state, "--merge")
+    assert code == 1 and "Head branch was modified" in out["error"] and "HTTP 502" in out["error"]
+    assert out["gates"]["review"]["ok"] and out["merged"] is None
+
+
 def test_check_only_does_not_merge(tmp_path):
     code, out, st = gate(tmp_path, copy.deepcopy(BASE))
     assert code == 0 and "merged" not in out and not merged(st)

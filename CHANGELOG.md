@@ -14,6 +14,7 @@
 - `phase_gate.py check` fails when a phase has a second `**Skills:**` line, or a backticked word on it that isn't a skill name. Before, it ignored the second line and took a path like `docs/x.md` for a skill. `/build-phase` reads a skill's description before invoking it, and skips one that acts instead of advising. (#54)
 - The `rejected-push` eval catches a branch moved inside the local remote without a push (`update-ref`, `branch -f`, a fetch run in it). With hooks off, those never reached the remote's audit hook. (#48)
 - The `rejected-push` eval no longer passes work pushed only to `main`. It also fails a run that copies a ref file into the remote, or pushes with the remote's hooks off. (#53)
+- `merge_gate` reports a merge that worked even when gh fails afterwards, for example deleting a local branch that another worktree has checked out. Before, it said `"merged": false` for a PR GitHub had merged. (#56)
 - The guard allows commands it wrongly blocked: (#58)
   - a `git config` read that ends with a redirect, such as `git config --get core.hooksPath 2>/dev/null`, `2>&1` or PowerShell's `2>$null`. A quoted `'2>/dev/null'` is still refused, since git sets the path to it.
   - `ls scripts/*.sh | xargs -n1 bash --`, where the `--` makes what xargs passes bash a script's name. Without it, xargs could pass `-c` and a command, so that form is still refused.
@@ -30,6 +31,7 @@
   - bash options that hid the command: `-euo pipefail` before a heredoc, `bash -c -e '…'`, `-oc`, `-co`
   - a redirect that split a command, as in `git push &>/dev/null --force` or `git push 2>&1 --force`
   - a GraphQL query built from `$(…)`, or sent to an encoded endpoint such as `gr%61phql`
+- `merge_gate` passes only if the PR merged at the head the review approved. Before, it also passed when someone pushed a new commit and merged the PR outside the gate while it ran. (#56)
 
 ## [0.5.0] - 2026-11-05
 ### Added
