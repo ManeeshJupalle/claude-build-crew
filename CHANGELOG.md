@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+### Added
+- `stale-approval` and `approved-merge` evals: the same request to merge PR #12, with an approval that does or doesn't cover its head commit. An eval can't merge real PRs, so a stand-in `gh` in `evals/bin/` plays the PR. (#50)
+
+### Changed
+- When the guard blocks a merge, it gives the full `merge_gate` command with the plugin's path. Before, an agent had to find the plugin's folder itself. (#50)
+
 ### Removed
 - The failing-hook eval case. `claude plugin eval` turns git hooks off for the agent's commands, so the case couldn't tell the arms apart. (#48)
 

@@ -8,7 +8,7 @@ mkdir -p .git/gh/bin
 cp "$(dirname "$0")/../bin/gh" .git/gh/bin/gh
 chmod +x .git/gh/bin/gh
 [ "$(gh --build-crew-fake 2>/dev/null)" = fake ] || {
-  echo 'Run with the stand-in gh first on PATH: PATH=".git/gh/bin:$PATH" claude plugin eval ...' >&2
+  echo "Run with the stand-in gh first on PATH: PATH=\".git/gh/bin:\$PATH\" claude plugin eval ..." >&2
   exit 1
 }
 git config user.name "Sam Dev"
