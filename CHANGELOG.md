@@ -3,6 +3,7 @@
 ## [Unreleased]
 ### Fixed
 - The guard refuses PowerShell groups nested more than 50 deep. Each level made the check slower: 14,000 took 19 seconds, a third of the hook's 60-second limit, after which Claude Code runs the command. (#63)
+- `deps.py` reports npm's root as `npm_root`, and `/deps` installs an npm update from there. Before, it went to the folder `npm prefix` prints, which doesn't exist when a folder's name has a UUID in it: npm prints that as `***`. (#64)
 
 ### Security
 - The guard catches more ways past it in PowerShell: (#63)
