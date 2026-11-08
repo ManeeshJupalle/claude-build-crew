@@ -68,6 +68,8 @@ PS_REMOVE = {"remove-item", "ri", "rm", "rmdir", "rd", "del", "erase"}
 PS_SET_ITEM = {"set-item", "si", "set-content", "sc", "new-item", "ni"}
 PS_SET_SWITCHES = ("force", "passthru", "nonewline", "asbytestream", "whatif", "confirm", "usetransaction", "verbose",
                    "debug")
+# commands whose options the guard checks: a value PowerShell computes from '-' pieces, ('--' + 'force'), can be one
+PS_DASH_CHECKED = {"git", "gh", "cmd", "iex", "invoke-expression"} | SHELLS | POWERSHELLS | PS_REMOVE | PS_SET_ITEM
 # an assignment in an expression, = or $o = or $o=git: what follows runs as a command
 PS_ASSIGN_WORD = re.compile(r"(?:\$[^=\s]*?)?(?:[-+*/%]|\?\?)?=(.*)", re.S)
 # a group led by one of these outputs the literals in it: $(if ($x) {'--force'}), (echo '--force')
@@ -976,6 +978,8 @@ def check_ps_segment(seg: list[str], state: dict, depth: int, stdin: bool = Fals
             return f"Skipping git hooks via $env:{m.group(1)} is forbidden."
     if not seg or re.match(r"[A-Za-z_]\w*=", seg[0]):  # PowerShell has no NAME=value prefix: $x = 'HUSKY=0' is text
         return None
+    if seg[0] == "." and len(seg) > 1:  # . git push dot-sources git: it runs it
+        seg = seg[1:]
     prog = prog_name(seg[0])
     if prog in PS_REMOVE:
         args = [a.upper() if a[:1] == "$" else a for a in seg[1:]]  # variable names ignore case: $home is $HOME
@@ -1008,66 +1012,106 @@ def check_ps(cmd: str, depth: int, state: dict, stdin: bool = False) -> str | No
         if reason:
             return reason
     # ( ) and { } group commands (if ($?) { git push }) but also wrap arguments (git commit -m (Get-Date) --no-verify),
-    # so check both ways, each from the same starting branch. Read as an argument, a group holding a command,
-    # (Join-Path $HOME x), is one word: its output. A group holding a value, ('--force') or ($HOME), is that value.
+    # so check both ways, each from the same starting branch
     start = dict(state)
     for grouping in (True, False):
         state.clear()
         state.update(start)
-        # values: for each open value group, [whether it's a ( ) group, whose ; and newlines separate values,
-        # whether its -words are operators (in an expression, ($a -join "`n"), up to its first ;), and the words of
-        # its statement after a ; or |, which can be a command: $(1; git push --force), checked on its own too].
-        # A { } block holds statements, which end the command as usual
-        seg, piped, skip, values, lead = [], False, 0, [], False
-
-        def add(word):
-            seg.append(word)
-            for v in values:
-                if v[2] is not None:
-                    v[2].append(word)
-
-        def statement_reason(v):
-            return check_ps_segment(v[2], state, depth, v[3] or stdin) if v[2] else None
-
-        for n, t in enumerate(tokens + [None]):  # None ends the last command
-            opens = t is OPEN or t is BRACE
-            if skip and t is not None:
-                skip += opens - (t is CLOSE)
-            elif not grouping and opens and ps_command_word(tokens[n + 1:n + 2]):
-                add(SUBST)
-                skip = 1
-            elif not grouping and opens:
-                nxt = tokens[n + 1] if n + 1 < len(tokens) else None
-                lead = isinstance(nxt, str) and not isinstance(nxt, Quoted) and nxt.lower() in PS_VALUE_LEADS
-                if lead:  # it outputs what it echoes: its literals, and maybe more
-                    add(SUBST)
-                values.append([t is OPEN, t is OPEN and not lead, None, False])
-            elif not grouping and t is CLOSE:
-                reason = statement_reason(values[-1]) if values else None
-                if reason:
-                    return reason
-                values = values[:-1]
-            elif values and values[-1][0] and (t is SEP or t is PIPE):  # ('x'; '--force') outputs both
-                reason = statement_reason(values[-1])
-                if reason:
-                    return reason
-                values[-1][1:] = [False, [], t is PIPE]
-            elif isinstance(t, str):
-                assign = values and values[-1][1] and not isinstance(t, Quoted) and PS_ASSIGN_WORD.fullmatch(t)
-                if lead:  # if, echo: not output
-                    lead = False
-                elif assign:  # ($o = git push --force) runs the command: no longer an expression, and checked too
-                    add(t)
-                    values[-1][1:] = [False, [assign.group(1)] if assign.group(1) else [], False]
-                elif not (values and values[-1][1] and t[:1] == "-" and not isinstance(t, Quoted)):
-                    add(t)
-            else:
-                reason = check_ps_segment(seg, state, depth, piped or stdin) if seg else None
-                if reason:
-                    return reason
-                seg, piped = [], t is PIPE or (piped and not seg)
+        reason = check_ps_tokens(tokens, grouping, state, depth, stdin)
+        if reason:
+            return reason
     return None
 
+
+def ps_group_end(tokens: list, n: int) -> int:
+    """Index of the ) or } that closes the group opening at tokens[n]."""
+    depth = 0
+    for k in range(n, len(tokens)):
+        depth += (tokens[k] is OPEN or tokens[k] is BRACE) - (tokens[k] is CLOSE)
+        if depth == 0:
+            return k
+    return len(tokens)
+
+
+def check_ps_tokens(tokens: list, grouping: bool, state: dict, depth: int, stdin: bool, nested: int = 0) -> str | None:
+    """One reading of check_ps()'s tokens. With grouping, ( ) and { } separate commands. Without, a group is an
+    argument: one holding a command, (Join-Path $HOME x), is one word, its output, and is checked as a command of its
+    own, whose value groups are its arguments. A group holding a value, ('--force') or ($HOME), is that value."""
+    if nested > 20:
+        return "Command nesting too deep to verify."
+    # values: for each open value group, [whether it's a ( ) group, whose ; and newlines separate values,
+    # whether its -words are operators (in an expression, ($a -join "`n"), up to its first ;), the words of
+    # its statement after a ; or |, which can be a command: $(1; git push --force), checked on its own too,
+    # whether that statement is piped, whether an operator computes its value, and whether a literal in it starts
+    # with -]. A { } block holds statements, which end the command as usual, unless it's inside a ( ) value group:
+    # $(if ($x) {'a'; '--force'}) outputs both
+    seg, piped, skip, values, lead = [], False, 0, [], False
+
+    def add(word):
+        seg.append(word)
+        for v in values:
+            if v[2] is not None:
+                v[2].append(word)
+
+    def statement_reason(v):
+        return check_ps_segment(v[2], state, depth, v[3] or stdin) if v[2] else None
+
+    for n, t in enumerate(tokens + [None]):  # None ends the last command
+        opens = t is OPEN or t is BRACE
+        if skip and t is not None:
+            skip += opens - (t is CLOSE)
+        elif not grouping and opens and ps_command_word(tokens[n + 1:n + 2]):
+            # ($x -and (git push origin ('--force'))) runs git with --force
+            reason = check_ps_tokens(tokens[n + 1:ps_group_end(tokens, n)], False, state, depth, stdin, nested + 1)
+            if reason:
+                return reason
+            add(SUBST)
+            skip = 1
+        elif not grouping and opens:
+            nxt = tokens[n + 1] if n + 1 < len(tokens) else None
+            lead = isinstance(nxt, str) and not isinstance(nxt, Quoted) and nxt.lower() in PS_VALUE_LEADS
+            if lead:  # it outputs what it echoes: its literals, and maybe more
+                add(SUBST)
+            values.append([t is OPEN, t is OPEN and not lead, None, False, False, False])
+            if len(values) > 50:  # each word joins every open group's statement: deep nesting takes quadratic time
+                return "Command nesting too deep to verify."
+        elif not grouping and t is CLOSE:
+            if not values:
+                continue
+            reason = statement_reason(values[-1])
+            if reason:
+                return reason
+            v = values.pop()
+            owner = next((u[2] for u in reversed(values) if u[2]), seg)  # the command it's an argument of
+            if v[4] and v[5] and owner and prog_name(owner[0]) in PS_DASH_CHECKED:
+                return f"PowerShell builds this {prog_name(owner[0])} argument from '-' pieces, so it can't be verified."
+            if values:
+                values[-1][4] |= v[4]
+                values[-1][5] |= v[5]
+        elif any(v[0] for v in values) and (t is SEP or t is PIPE):  # ('x'; '--force') outputs both
+            reason = statement_reason(values[-1])
+            if reason:
+                return reason
+            values[-1][1:4] = [False, [], t is PIPE]
+        elif isinstance(t, str):
+            assign = values and values[-1][1] and not isinstance(t, Quoted) and PS_ASSIGN_WORD.fullmatch(t)
+            operator = bool(values) and values[-1][1] and t[:1] == "-" and not isinstance(t, Quoted)
+            if values:  # ('--' + 'force'), ('-{0}force' -f '-')
+                values[-1][4] |= operator or "+" in t or "*" in t
+                values[-1][5] |= isinstance(t, Quoted) and t[:1] == "-" and t[1:2] != " "  # not '- fixed x'
+            if lead:  # if, echo: not output
+                lead = False
+            elif assign:  # ($o = git push --force) runs the command: no longer an expression, and checked too
+                add(t)
+                values[-1][1:4] = [False, [assign.group(1)] if assign.group(1) else [], False]
+            elif not operator:
+                add(t)
+        else:
+            reason = check_ps_segment(seg, state, depth, piped or stdin) if seg else None
+            if reason:
+                return reason
+            seg, piped = [], t is PIPE or (piped and not seg)
+    return None
 
 def check(cmd: str, depth: int = 0, state: dict | None = None, shell: str = "bash", stdin: bool = False) -> str | None:
     """stdin: whether the command reads a pipe or a redirect, as when a shell fed by one runs it."""

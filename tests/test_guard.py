@@ -675,6 +675,24 @@ PS_BLOCKED = [
     "($o += git push origin ('--force'))",
     "if ($?) { & ('git') push --force }",
     "try { & ('git') commit -not -m x } catch { }",
+    # a command group in an expression is a command too, whose value groups are its arguments
+    "($x -and (git push origin ('--force')))",
+    "('a' + $(git push origin ('--force')))",
+    "Write-Output ($x -or (git commit -m x ('--no-verify')))",
+    "if ($x -and (git push origin ('-f'))) { }",
+    # dot-sourcing runs the command
+    ". git push --force",
+    "$x = . gh pr merge 1",
+    # an argument PowerShell builds from '-' pieces
+    "git push origin ('--'+'force')",
+    "git commit -m x ('--' + 'no-verify')",
+    "git reset ('--' + 'hard')",
+    "git clean ('-' * 1 + 'fd')",
+    "Remove-Item ('-' + 'Recurse') C:\\",
+    # a ; in a { } block inside a value group separates values too
+    "git push origin $(if ($x) {'a'; '--force'})",
+    "git push origin @(foreach ($i in 1) {'a'; '--force'})",
+    "git commit -m x $(if ($x) {'a'\n'--no-verify'})",
 ]
 
 PS_UNPARSEABLE = ["git commit -m 'unbalanced", "git push --force`",
@@ -737,6 +755,15 @@ PS_ALLOWED = [
     "New-Item -Path . -Name notes.txt -Value x",
     "Set-Content -Encoding utf8 notes.txt 'HUSKY=0'",
     "[string] $branch = git branch --show-current",
+    # values built from text that isn't an option, and statements in a block
+    "Write-Host ('-' * 40)",
+    "git commit -m ('- fixed x' + \"`n\" + '- fixed y')",
+    "git log -n ($n + 1)",
+    "git log --format=('%h' + ' %s')",
+    "foreach ($i in 1..3) { Write-Output $i; git status }",
+    "git commit -m $(if ($x) {'fix: a'; 'fix: b'})",
+    ". .\\scripts\\env.ps1",
+    "($x -and (git status))",
 ]
 
 
@@ -848,7 +875,9 @@ def test_blocks_commands_too_long_or_slow_to_check(monkeypatch):
     assert res.returncode == 2 and b"too long" in res.stderr
     for cmd, tool in (("cat <<" + "A" * 99_000, "Bash"), ("cat <<A\n" * 12_000, "Bash"),
                       ("x=$(cat <<A\nA\n)\n" * 5_000, "Bash"), ("@'\n" * 30_000, "PowerShell"),
-                      ("si" + " env:A" * 16_000 + "; git push --force", "PowerShell")):
+                      ("si" + " env:A" * 16_000 + "; git push --force", "PowerShell"),
+                      ("('a'; " * 16_000 + ")" * 16_000, "PowerShell"),  # each word joins every open group
+                      ("$(if ($x) {'a'; " * 5_000 + "})" * 5_000, "PowerShell")):
         start = time.monotonic()
         run_guard(cmd, tool)
         assert time.monotonic() - start < 10, cmd[:10]  # no regex that rescans the rest of the command
