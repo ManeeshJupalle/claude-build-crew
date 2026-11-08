@@ -24,6 +24,7 @@
   - a later statement in a command group, which PowerShell passes on as an argument: `git push origin $(Get-Date; '--force')`, also what an `echo` there outputs
   - an argument to git, gh, a shell or `Remove-Item` that PowerShell builds from pieces starting with `-`: `('--' + 'force')`, `('-' * 2 + 'force')`. One built some other way, such as from `[char]45`, is still past it (see Limits in the README)
   - a `;` in a `{ }` block inside a value group, where it separates values, not commands: `git push origin $(if ($x) {'a'; '--force'})`
+- The guard reads `$'…'` escapes as bash does. Before, it dropped each backslash, so `eval $'true\ngit push --force'` read as one harmless command, and `$'\x2d\x2dforce'` wasn't `--force`. A command holding one of the guard's own placeholder characters (U+E000 to U+E00A), typed or from an escape, is refused, since `eval` would read it back as `;` or `#`. (#65)
 
 ## [0.5.1] - 2026-11-07
 ### Added

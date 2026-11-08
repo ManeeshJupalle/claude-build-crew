@@ -65,10 +65,14 @@ SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "mksh", "ash", "fish", "csh", "tcs
 KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "export"}  # what follows is a command
 PLACEHOLDERS = {c: chr(0xE000 + n) for n, c in enumerate(";&|\n(){}#<>")}  # stand-ins for quoted separators
 RESTORE = {ord(v): k for k, v in PLACEHOLDERS.items()}
+RESTORE_CHARS = "".join(PLACEHOLDERS.values())
 COMMENT_START = set(" \t\n;&|()")  # a word starts right after one of these, so a # there starts a comment
 REDIRECT_OP = re.compile(r"&>>?|<>|<&|>>|>&|>\||[<>]")  # its & or | is part of it, not a separator: 2>&1, >|, &>
 # a redirect word from prescan(), whose & and | are placeholders. What follows the operator is its file
 REDIRECT = re.compile(rf"\d*(<<-|[<>]+[{PLACEHOLDERS['&']}{PLACEHOLDERS['|']}]?)|{PLACEHOLDERS['&']}>+")
+# $'...' escapes: \n is a newline, so $'true\ngit push --force' is two commands, and \x2d, \55 and \u002d are a -
+ANSI_C = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v"}
+ANSI_C_CODE = re.compile(r"[0-7]{1,3}|x[0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]{1,4}|U[0-9A-Fa-f]{1,8}|c.", re.S)
 STDIN_PATH = re.compile(r"(^|/)(dev/(stdin|fd/\d+)|proc/[^/]+/fd/\d+)$")
 SUBST = ""  # stands for a $(...) or `...` substitution, or a PowerShell group, checked on its own
 PROCSUB = ""  # stands for a <(...) or >(...): a file whose contents a command makes, checked on its own
@@ -138,6 +142,29 @@ def local_branch_exists(name: str) -> bool:
                               capture_output=True, timeout=5).returncode == 0
     except Exception:
         return False
+
+
+def ansi_c(cmd: str, j: int) -> tuple[str, int]:
+    """The text the character at j stands for in $'...', and where the next one starts: \n, \x2d, \55, \u002d,
+    \cA, \' and \\ as bash reads them. An escape bash doesn't know keeps its backslash."""
+    if cmd[j] != "\\":
+        return cmd[j], j + 1
+    nxt = cmd[j + 1:j + 2]
+    if nxt in ANSI_C:
+        return ANSI_C[nxt], j + 2
+    m = ANSI_C_CODE.match(cmd, j + 1)
+    if not m:
+        return (nxt if nxt in "\\'\"?" else "\\" + nxt), j + 2
+    code = m.group()
+    if code[0] == "c":  # a control character: \c? is DEL, and \c' is text
+        if code[1] == "'":
+            return "\\c", j + 2
+        if code[1] == "\\":  # bash pairs this \ with the next character, so \c\' doesn't end the string
+            after = cmd[m.end():m.end() + 1]
+            return "\x1c" + ("" if after == "\\" else after), m.end() + 1
+        return ("\x7f" if code[1] == "?" else chr(code[1].encode("utf-8", "surrogatepass")[0] & 31)), m.end()
+    value = int(code, 8) if code[0] in "01234567" else int(code[1:], 16)
+    return chr(value & 0xFF if code[0] in "01234567" else min(value, 0x10FFFF)), m.end()
 
 
 def heredoc_word(cmd: str, i: int) -> tuple[tuple[bool, str, bool] | None, int]:
@@ -311,6 +338,8 @@ def prescan(cmd: str, shifts: bool) -> tuple[str, list[str], list[int]]:
     commands inside to be checked on their own, and which of them are in a >(...), reading what the command writes.
     Each redirect becomes a word of its own (x>f is x >f), and heredoc bodies are data (commit messages, PR bodies),
     not commands: drop them, keeping the line each starts on. shifts: read a << in $((…)) and the like as a shift."""
+    if set(cmd) & set(RESTORE_CHARS):  # one of ours, typed: eval and bash -c would read it back as ; or #
+        raise ValueError("a placeholder character")
     out, inner, writes, quote, i, heredocs, lines, nest = [], [], [], None, 0, [], {}, [0, 0, 0]
     while i < len(cmd):
         c = cmd[i]
@@ -329,12 +358,14 @@ def prescan(cmd: str, shifts: bool) -> tuple[str, list[str], list[int]]:
         elif quote is None and cmd.startswith("$'", i):  # $'...' quotes like '...', but \' is a quote inside it
             j, text = i + 2, []
             while j < len(cmd) and cmd[j] != "'":
-                j += cmd[j] == "\\"
-                text.append(PLACEHOLDERS.get(cmd[j:j + 1], cmd[j:j + 1]))
-                j += 1
+                ch, j = ansi_c(cmd, j)
+                text.append(ch)
             if j >= len(cmd):
                 raise ValueError("unbalanced quotes")
-            out.append("'" + "".join(text).replace("'", "'\"'\"'") + "'")
+            text = "".join(text).split("\0")[0]  # bash ends the string at a NUL
+            if any("\ue000" <= ch <= "\ue0ff" for ch in text):  # $'\ue008' would read back as # in eval or bash -c
+                raise ValueError("a placeholder character")
+            out.append("'" + "".join(PLACEHOLDERS.get(ch, ch) for ch in text).replace("'", "'\"'\"'") + "'")
             i = j + 1
         elif c == "#" and quote is None and (not out or out[-1] in COMMENT_START):  # a comment runs to the line's end
             j = cmd.find("\n", i)

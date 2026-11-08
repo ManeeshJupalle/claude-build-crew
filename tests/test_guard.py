@@ -455,6 +455,17 @@ BLOCKED = [
     "a[1<<y]=5\ngit push --force\ny]=5",
     "for ((i=0; i<<1 < 3; i++)); do :; done\ngit push --force\n1",
     "git push $(echo ${a[1<<y]}\n) --force\ny]}\n)",
+    # $'...' escapes: \n is a newline and \x2d a -, as bash reads them
+    "eval $'true\\ngit push --force'",
+    "bash -c $'true\\ngit push --force'",
+    "git push $'\\x2d\\x2dforce'",
+    "git push $'\\55\\55force'",
+    "git push $'\\u002d-force'",
+    "git commit -m x $'\\x2dn'",
+    "git push origin $'\\x6d\\x61\\x69\\x6e'",
+    "echo $'\\c\\'x' ; git push --force #'",   # bash pairs \c's \ with the quote
+    "git push origin $'main\\0x'",                 # bash ends the string at the NUL: main
+    "eval $'true\\cJgit push --force'",            # \cJ is a newline
 ]
 
 # blocked because they can't be parsed, the only cases allowed to block that way
@@ -465,6 +476,9 @@ UNPARSEABLE = [
     "cat <<\"a\\\"b\"\nx\na\"b\ngit push --force",
     "cat <<$EOF\nx\n$EOF\ngit push --force",
     "echo $((1<<y\n))\ngit push --force\ny",          # read as a heredoc too, its $(( never closes
+    # one of the guard's own placeholders, typed or from a $'' escape, would read back as # or ;
+    "eval $'echo x \\ue008; git push --force'",
+    "eval 'echo x \ue008; git push --force'",
 ]
 
 ALLOWED = [
@@ -610,6 +624,11 @@ ALLOWED = [
     "git log --oneline | tee >(wc -l)",
     "echo $((1 << 20))",
     "cat <<EOF\n$((1<<2))\nEOF",
+    "git commit -m $'line one\\nline two'",
+    "printf $'%s\\n' a b",
+    "echo $'\\c\\'x'",
+    "eval $'true\\0; git push --force'",           # bash evals true
+    "echo $'\\x41\\té'",
 ]
 
 # commands from Claude Code's PowerShell tool
