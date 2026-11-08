@@ -425,6 +425,7 @@ BLOCKED = [
     "echo sh | xargs -I_ git pu_ --force",
     "echo sh | xargs -I_ git -C _/.. pu_ --force",       # each word holding it counts, not just -C's folder
     "echo config-env=alias.p=X | xargs -I_ git --_ p",  # before the subcommand, only as -C's folder
+    "echo config-env=alias.p=X | xargs -I_ git --namespace -C --_ p",  # -C is --namespace's value here
     "echo 'pr merge 1' | xargs gh",
     "echo 'merge 1' | xargs gh pr",
     "echo 'push --force' | xargs env git",

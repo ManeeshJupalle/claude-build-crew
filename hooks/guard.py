@@ -845,12 +845,15 @@ def xargs_input_at(opts: list[str], words: list[str]) -> list[int]:
     return [k for k, w in enumerate(words) if replace in w]
 
 
-def git_subcommand_at(args: list[str]) -> int:
-    """Where git's subcommand is: after its global options and their values."""
-    i = 0
+def git_subcommand_at(args: list[str]) -> tuple[int, set[int]]:
+    """Where git's subcommand is, after its global options and their values, and where each -C option's folder is:
+    in git --namespace -C --x, -C is a value and --x an option."""
+    i, folders = 0, set()
     while i < len(args) and args[i].startswith("-"):
+        if args[i] == "-C":
+            folders.add(i + 1)
         i += 2 if args[i] in GIT_VALUE_OPTIONS else 1
-    return i
+    return i, folders
 
 
 def xargs_picks(prog: str, args: list[str], ats: list[int], one_word: bool) -> bool:
@@ -860,9 +863,9 @@ def xargs_picks(prog: str, args: list[str], ats: list[int], one_word: bool) -> b
     does, so as git -C's folder it can't move the subcommand. Anywhere else before it, it can become an option that
     sets an alias or turns hooks off: git --_ p, filled in as --config-env=alias.p=X."""
     if prog == "git":
-        sub = git_subcommand_at(args)
+        sub, folders = git_subcommand_at(args)
         if one_word:  # git -C _/.. pu_ --force: every word holding it counts
-            return any(at == sub or at < sub and args[at - 1:at] != ["-C"] for at in ats)
+            return any(at == sub or at < sub and at not in folders for at in ats)
         return ats[0] <= sub
     if prog == "gh":
         return ats[0] < 2
