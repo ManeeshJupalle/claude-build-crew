@@ -1,6 +1,18 @@
 # Changelog
 
 ## [Unreleased]
+### Added
+- `tests/guard_diff.py` runs the guard and another version of it, `origin/main` by default, on the test cases and on dangerous commands wrapped in others, and lists each command that version blocks and this one allows. Use it to review a guard change. (#62)
+
+### Security
+- The guard catches more ways past it in Bash: (#62)
+  - a wrapper option that takes no value, which hid the command after it: `env -i git …`, `sudo -n …`, `sudo -s …`, `command -p …`, `time -p …`. Each wrapper has its own options, so `env -C dir`, `exec -a name` and `sudo -nu root` skip their values
+  - `env -S '…'` and `--split-string`, whose string env splits into the command
+  - `builtin` as a wrapper, and `export` after one: `command export x HUSKY=0`
+  - a command, or git's or gh's subcommand, that xargs reads: `echo 'push --force' | xargs git`, `xargs -I{} {} push`, `xargs env`. Also `xargs cmd /c` and `xargs pwsh -c`, which run what xargs adds as code
+  - a GraphQL query from a shell variable: `-f query="$Q"`
+  - a shell reading the pipe from a substitution: `… | tee >(bash)`, `… | y "$(bash)"`
+  - a `<<` in `((…))`, `$((…))`, `$[…]`, `${…}` or `a[…]=`, which bash reads as a shift, not a heredoc whose body would hide the lines after it. Where bash may still read a heredoc, the guard checks both readings
 
 ## [0.5.1] - 2026-11-07
 ### Added

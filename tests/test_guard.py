@@ -388,6 +388,62 @@ BLOCKED = [
     # GNU rm takes a long option's unique prefix
     "rm --rec ~",
     "rm --recu -f /",
+    # each wrapper has its own options: these take no value, so the next word is the command
+    "env -i git push --force",
+    "sudo -n git push --force",
+    "sudo -s git push --force",
+    "command -p git push --force",
+    "time -p git push --force",
+    # and these take one, also in a cluster or as a long option's prefix
+    "sudo -nu root git push --force",
+    "exec -a name git push --force",
+    "env -C dir git push --force",
+    "env --chd dir git push --force",
+    "builtin eval 'git push --force'",
+    # env -S splits its string into words
+    "env -S 'git push --force'",
+    "env -S'git push --force'",
+    "env --split-string='-i git push --force'",
+    "env -S 'x=1 HUSKY=0 git commit -m x'",
+    "env -S 'git\\_push\\_--force'",
+    "env -S \"'git push --force\"",
+    # export after a wrapper sets what it gets too
+    "command export x HUSKY=0; git commit -m x",
+    "builtin export x HUSKY=0; git commit -m x",
+    "builtin declare -x HUSKY=0; git commit -m x",
+    # what xargs reads can be the command, git's or gh's subcommand, or code that cmd or PowerShell runs
+    "echo 'push --force' | xargs git",
+    "echo 'dir push --force' | xargs git -C",
+    "echo sh | xargs -I_ git pu_ --force",
+    "echo 'pr merge 1' | xargs gh",
+    "echo 'merge 1' | xargs gh pr",
+    "echo 'push --force' | xargs env git",
+    "echo git | xargs -I{} {} push --force",
+    "echo 'git push --force' | xargs env",
+    "echo 'root git push --force' | xargs sudo -u",
+    "echo 'git push --force' | xargs cmd /c",
+    "echo x | xargs -I{} cmd /c echo {}",
+    "echo 'git push --force' | xargs pwsh -NoProfile -c Write-Output",
+    "echo x | xargs -a args.txt bash",                  # -a's value is the file
+    "echo 'git push --force' | xargs -i bash {} -c",    # -i takes a value only in the same word
+    # a GraphQL query from a shell variable can hide a mutation
+    'gh api graphql -f query="$Q"',
+    'gh api graphql -F query="${Q}"',
+    'gh api graphql --raw-field query="query { $FIELDS }"',
+    'gh api graphql -f "$K=x"',
+    # a shell in a substitution reads the stdin of the command it's in, and one in >(...) what that command writes
+    "echo 'git push --force' | tee >(bash)",
+    "echo 'git push --force' | tee >(sh -s) >/dev/null",
+    "echo 'git push --force' | y \"$(bash)\"",
+    "echo 'git push --force' | diff <(bash) x",
+    # << is a shift in arithmetic, and text in ${...} or a subscript: not a heredoc
+    "((x<<y))\ngit push --force\ny",
+    "echo $((1<<'y'\n$(git push --force)\ny\n))",
+    "echo $[1<<y]\ngit push --force\ny]",
+    "echo ${a[1<<y]}\ngit push --force\ny]}",
+    "a[1<<y]=5\ngit push --force\ny]=5",
+    "for ((i=0; i<<1 < 3; i++)); do :; done\ngit push --force\n1",
+    "git push $(echo ${a[1<<y]}\n) --force\ny]}\n)",
 ]
 
 # blocked because they can't be parsed, the only cases allowed to block that way
@@ -397,6 +453,7 @@ UNPARSEABLE = [
     "git push<<'' --force",
     "cat <<\"a\\\"b\"\nx\na\"b\ngit push --force",
     "cat <<$EOF\nx\n$EOF\ngit push --force",
+    "echo $((1<<y\n))\ngit push --force\ny",          # read as a heredoc too, its $(( never closes
 ]
 
 ALLOWED = [
@@ -526,6 +583,19 @@ ALLOWED = [
     "gh api repos/o/graphql-tools/issues --input body.json",
     "gh api repos/o/r/contents/schema.graphql -X PUT -f message=x -F content=@schema.graphql",
     "gh api graphql -f query='query($owner: String!) { repositoryOwner(login: $owner) { id } }' -f owner=\"$(whoami)\"",
+    # wrappers, xargs, substitutions and shifts used as intended
+    "sudo -u deploy git status",
+    "env -i PATH=/usr/bin git status",
+    "env -S 'git status --short'",
+    "nice -n 10 git log",
+    "git diff --name-only | xargs git add",
+    "git branch --merged | grep -v main | xargs git branch -d",
+    "ls | xargs -n1 gh pr view",
+    "ls *.ps1 | xargs pwsh -NoProfile -File lint.ps1",
+    "gh api graphql -f query='query($owner: String!) { repositoryOwner(login: $owner) { id } }' -F owner=\"$OWNER\"",
+    "git log --oneline | tee >(wc -l)",
+    "echo $((1 << 20))",
+    "cat <<EOF\n$((1<<2))\nEOF",
 ]
 
 # commands from Claude Code's PowerShell tool
@@ -809,6 +879,8 @@ def test_tracks_branch_switch_inside_one_command(repo):
     assert guard("git switch -c feat/y && git commit -m 'feat: y'", cwd=repo) == 0
     assert guard("git switch main && git commit -m x", cwd=repo.parent) == 2
     assert guard("{ git commit -m x; }; git switch -c feat/y", cwd=repo) == 2  # the commit runs on main
+    # bash reads this << as a heredoc, as a[ is a subscript only in an assignment: the switch in its body never runs
+    assert guard("echo a[ <<EOF\ngit switch -c feat/y\nEOF\ngit commit -m x", cwd=repo) == 2
 
 
 def test_push_head_resolves_to_current_branch(repo, feature_repo=None):
