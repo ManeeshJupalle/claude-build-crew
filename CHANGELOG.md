@@ -1,8 +1,10 @@
 # Changelog
 
 ## [Unreleased]
+
+## [0.5.1] - 2026-11-07
 ### Added
-- `stale-approval` and `approved-merge` evals: the same request to merge PR #12, with an approval that does or doesn't cover its head commit. An eval can't merge real PRs, so a stand-in `gh` in `evals/bin/` plays the PR. (#50)
+- `stale-approval` and `approved-merge` evals: the same request to merge a PR, with an approval that does or doesn't cover its head commit. An eval can't merge real PRs, so a stand-in `gh` in `evals/bin/` plays the PR. (#50)
 
 ### Changed
 - When the guard blocks a merge, it gives the full `merge_gate` command with the plugin's path. Before, an agent had to find the plugin's folder itself. (#50)
@@ -45,7 +47,7 @@
   - a group whose output becomes arguments: `$(if ($true) {'--force'})`, `$(switch …)`, `(echo '--force')`, and values split by a newline or `;`, as in `@(⏎'x',⏎'--force'⏎)` or `$('x'; '--force')`
   - `Set-Content -Encoding utf8 env:HUSKY 0`, `Set-Item -Filter * env:HUSKY 0` and `New-Item -Path Env: -Name HUSKY -Value 0`
   - `gh api $(…) --input -`, whose endpoint PowerShell builds
-- From Bash, `rm --rec ~`: GNU rm takes a long option's unique prefix. (#60)
+- `rm --rec ~` from Bash is refused: GNU rm takes a long option's unique prefix. (#60)
 - `merge_gate` passes only if the PR merged at the head the review approved. Before, it also passed when someone pushed a new commit and merged the PR outside the gate while it ran. (#56)
 
 ## [0.5.0] - 2026-11-05
