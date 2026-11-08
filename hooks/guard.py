@@ -838,7 +838,7 @@ def with_xargs_input(opts: list[str], args: list[str]) -> list[str]:
 
 def xargs_input_at(opts: list[str], words: list[str]) -> list[int]:
     """Where what xargs adds goes in a command's words: after them, or at each word that holds its replace string,
-    anywhere in it (pu{} can be push). None if it adds none."""
+    anywhere in it (pu{} can be push). Empty if it adds none."""
     replace, _ = xargs_replace(opts)
     if replace is None:
         return [len(words)]
@@ -857,12 +857,12 @@ def xargs_picks(prog: str, args: list[str], ats: list[int], one_word: bool) -> b
     """Whether what xargs adds at args[at] for each at can choose what prog runs: git's or gh's subcommand, or the
     code cmd or PowerShell runs. cmd reads its whole command line again, and PowerShell joins its arguments into one
     command, unless -File runs a script, which gets them as arguments. one_word: each fills one word, as -I's string
-    does, so as git -C's folder it can't move the subcommand, though as -c's setting it can turn hooks off."""
+    does, so as git -C's folder it can't move the subcommand. Anywhere else before it, it can become an option that
+    sets an alias or turns hooks off: git --_ p, filled in as --config-env=alias.p=X."""
     if prog == "git":
         sub = git_subcommand_at(args)
         if one_word:  # git -C _/.. pu_ --force: every word holding it counts
-            return any(at == sub or at < sub and (args[at - 1:at] in (["-c"], ["--config-env"])
-                                                  or args[at].startswith(("-c", "--config-env"))) for at in ats)
+            return any(at == sub or at < sub and args[at - 1:at] != ["-C"] for at in ats)
         return ats[0] <= sub
     if prog == "gh":
         return ats[0] < 2
@@ -1278,9 +1278,10 @@ def check(cmd: str, depth: int = 0, state: dict | None = None, shell: str = "bas
         ends.append(dict(state))
     # what runs next starts on the branch a reading ends on, a protected one if either does:
     # eval $'((x<<y))\ngit switch main\ny'; git commit -m x
-    end = ends[-1]
-    if len(ends) > 1:  # one that switches nothing stays on the current branch
-        end = next((e for e in ends if PROTECTED.match(e.get("branch") or current_branch() or "x")), end)
+    end, branches = ends[-1], {e.get("branch") for e in ends}
+    if len(branches) > 1:  # one that switches nothing stays on the current branch: ask git only then, once
+        current = current_branch() if None in branches else None
+        end = next((e for e in ends if PROTECTED.match(e.get("branch") or current or "x")), end)
     state.clear()
     state.update(end)
     return None
