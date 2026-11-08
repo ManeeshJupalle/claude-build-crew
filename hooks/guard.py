@@ -1072,12 +1072,14 @@ def check_ps_tokens(tokens: list, grouping: bool, state: dict, depth: int, stdin
                 values[-1][6] = False
             # a statement in it that holds a value outputs it too, and PowerShell passes each one on as an argument:
             # git push origin $(Get-Date; '--force')
-            level, value = 0, False
+            level, value, echo = 0, False, False
             for k, b in enumerate(body):
                 level += (b is OPEN or b is BRACE) - (b is CLOSE)
                 if level == 0 and b is SEP:
                     value = not ps_command_word(body[k + 1:k + 2])
-                elif value and isinstance(b, str) and not (b[:1] == "-" and not isinstance(b, Quoted)):  # $a -f $b
+                    echo = str(body[k + 1:k + 2][0]).lower() in ("echo", "write", "write-output") if value else False
+                # its -words are operators ($a -f $b), unless it echoes them: $(Get-Date; echo --force)
+                elif value and isinstance(b, str) and (echo or not (b[:1] == "-" and not isinstance(b, Quoted))):
                     add(b)
             skip = 1
         elif not grouping and opens:

@@ -704,6 +704,7 @@ PS_BLOCKED = [
     "git reset ('' + '--' + 'hard')",
     # a later statement in a command group is output too, and PowerShell passes it on as an argument
     "git push origin $(Get-Date; '--force')",
+    "git push origin $(Get-Date; echo --force)",
     # a group left open is still checked
     "$(1; git push origin ('--force')",
 ]
