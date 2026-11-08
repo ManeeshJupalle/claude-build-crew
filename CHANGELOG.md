@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+
+## [0.5.1] - 2026-11-07
 ### Added
 - `stale-approval` and `approved-merge` evals: the same request to merge PR #12, with an approval that does or doesn't cover its head commit. An eval can't merge real PRs, so a stand-in `gh` in `evals/bin/` plays the PR. (#50)
 
