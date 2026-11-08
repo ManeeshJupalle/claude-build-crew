@@ -789,6 +789,11 @@ PS_BLOCKED = [
     # a later statement in a command group is output too, and PowerShell passes it on as an argument
     "git push origin $(Get-Date; '--force')",
     "git push origin $(Get-Date; echo --force)",
+    # a statement's own block ends it, also inside $( )
+    "$(if ($x) { 'a'; } git push origin ('--force'))",
+    "Write-Output $(if ($x) { 'a' } git reset ('--hard'))",
+    "$(if ($x) { git status } git push origin ('--force'))",
+    "$(try { 'a' } catch { } git push origin ('--force'))",
     # a group left open is still checked
     "$(1; git push origin ('--force')",
 ]
@@ -875,6 +880,10 @@ PS_ALLOWED = [
     "try { git push origin feat/x; } catch { }",
     "foreach ($f in $files) { git add $f; }",
     "git commit -m $(git log -1 --format=%s;)",
+    "$(if ($x) { 'a' } else { 'b' })",
+    "git commit -m $(if ($x) { 'fix: a' } else { 'fix: b' })",
+    "$(try { Get-Date } catch { 'never' })",
+    "Write-Output $(foreach ($i in 1..3) { $i * 2 })",
 ]
 
 

@@ -1210,8 +1210,9 @@ def check_ps_tokens(tokens: list, grouping: bool, state: dict, depth: int, stdin
     # its statement after a ; or |, which can be a command: $(1; git push --force), checked on its own too,
     # whether that statement is piped, whether an operator computes its value, whether a literal that starts its
     # value starts with -, and whether nothing but '' has come yet]. A { } block holds statements, which end the command
-    # as usual, unless it's inside a ( ) value group: $(if ($x) {'a'; '--force'}) outputs both
-    seg, piped, skip, values, lead = [], False, 0, [], False
+    # as usual, unless it's inside a ( ) value group: $(if ($x) {'a'; '--force'}) outputs both. A statement's own
+    # block (if (...) { }, else { }, try { }) ends it there too: $(if ($x) {'a'} git push ...) runs git
+    seg, piped, skip, values, lead, restart = [], False, 0, [], False, False
 
     def add(word):
         seg.append(word)
@@ -1222,10 +1223,23 @@ def check_ps_tokens(tokens: list, grouping: bool, state: dict, depth: int, stdin
     def statement_reason(v):  # on a copy of the branch state: $(if ($x) {'HEAD'; git checkout -b y}) may not switch
         return check_ps_segment(v[2], dict(state), depth, v[3] or stdin) if v[2] else None
 
+    def new_statement(pipe: bool) -> str | None:  # in the innermost value group: check the one that ends
+        reason = statement_reason(values[-1])
+        values[-1][1:4] = [False, [], pipe]
+        values[-1][6] = True
+        return reason
+
     for n, t in enumerate(tokens + [None]):  # None ends the last command
         opens = t is OPEN or t is BRACE
+        prev = tokens[n - 1] if n else None  # a statement's own block: if (...) { }, else { }, try { }
+        block = t is BRACE and (prev is CLOSE or isinstance(prev, str) and prev.lower() in
+                                ("else", "try", "catch", "finally", "do"))
         if skip and t is not None:
             skip += opens - (t is CLOSE)
+            if not skip and restart:
+                restart, reason = False, new_statement(False)
+                if reason:
+                    return reason
         elif not grouping and opens and ps_command_word(tokens[n + 1:n + 2]):
             # ($x -and (git push origin ('--force'))) runs git with --force. It may not run at all (if, -and, try), so
             # a branch it switches to isn't the one later commands run on
@@ -1234,6 +1248,7 @@ def check_ps_tokens(tokens: list, grouping: bool, state: dict, depth: int, stdin
             if reason:
                 return reason
             add(SUBST)
+            restart = block and any(v[0] for v in values)
             if values:  # ((Get-Date) + '-fix'): the value starts with its output, not with the '-'
                 values[-1][6] = False
             # a statement in it that holds a value outputs it too, and PowerShell passes each one on as an argument:
@@ -1253,7 +1268,7 @@ def check_ps_tokens(tokens: list, grouping: bool, state: dict, depth: int, stdin
             lead = isinstance(nxt, str) and not isinstance(nxt, Quoted) and nxt.lower() in PS_VALUE_LEADS
             if lead:  # it outputs what it echoes: its literals, and maybe more
                 add(SUBST)
-            values.append([t is OPEN, t is OPEN and not lead, None, False, False, False, True])
+            values.append([t is OPEN, t is OPEN and not lead, None, False, False, False, True, block])
             if len(values) > 50:  # each word joins every open group's statement: deep nesting takes quadratic time
                 return "Command nesting too deep to verify."
         elif not grouping and t is CLOSE:
@@ -1272,12 +1287,14 @@ def check_ps_tokens(tokens: list, grouping: bool, state: dict, depth: int, stdin
                 values[-1][4] |= v[4]
                 values[-1][5] |= v[5]
                 values[-1][6] = False
+            if v[7] and any(u[0] for u in values):
+                reason = new_statement(False)
+                if reason:
+                    return reason
         elif any(v[0] for v in values) and (t is SEP or t is PIPE):  # ('x'; '--force') outputs both
-            reason = statement_reason(values[-1])
+            reason = new_statement(t is PIPE)
             if reason:
                 return reason
-            values[-1][1:4] = [False, [], t is PIPE]
-            values[-1][6] = True
         elif isinstance(t, str):
             assign = values and values[-1][1] and not isinstance(t, Quoted) and PS_ASSIGN_WORD.fullmatch(t)
             operator = bool(values) and values[-1][1] and t[:1] == "-" and not isinstance(t, Quoted)

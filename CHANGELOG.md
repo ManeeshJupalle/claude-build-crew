@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 ### Added
-- `tests/guard_diff.py` runs the guard and another version of it, `origin/main` by default, on the test cases and on dangerous commands wrapped in others, and lists each command that version blocks and this one allows. Use it to review a guard change. (#62)
+- `tests/guard_diff.py` runs the guard and another version of it, `origin/main` by default, on the test cases and on dangerous commands wrapped in others, and lists each command that version blocks and this one allows, or that this one crashes on. Use it to review a guard change. (#62, #63)
 
 ### Fixed
 - The guard refuses PowerShell groups nested more than 50 deep. Each level made the check slower: 14,000 took 19 seconds, a third of the hook's 60-second limit, after which Claude Code runs the command. (#63)

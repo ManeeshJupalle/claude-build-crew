@@ -32,7 +32,8 @@ WRAPS = ["@@", "x; @@", "x && @@", "x || @@", "x | @@", "@@ &", "(@@)", "{ @@; }
 PS_DANGER = ["git push --force", "git push origin ('--force')", "git commit -n -m x", "Remove-Item -Recurse C:\\",
              "$env:HUSKY = 0", "Set-Item env:HUSKY 0", "gh pr merge 1", "git reset --hard", "rm -r -fo $HOME"]
 PS_WRAPS = ["@@", "x; @@", "x | @@", "$(@@)", "@(@@)", "& { @@ }", "if ($x) { @@ }", "try { @@ } catch { }",
-            "foreach ($i in 1) { @@ }", "Write-Output (@@)", "$y = @@", "@@ 2>$null", "pwsh -c '@@'", "x\n@@"]
+            "foreach ($i in 1) { @@ }", "Write-Output (@@)", "$y = @@", "@@ 2>$null", "pwsh -c '@@'", "x\n@@",
+            "$(if ($x) {'a'; } @@)"]
 
 
 def load(name: str, path: str):
