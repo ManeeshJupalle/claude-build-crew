@@ -65,6 +65,7 @@ SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "mksh", "ash", "fish", "csh", "tcs
 KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "export"}  # what follows is a command
 PLACEHOLDERS = {c: chr(0xE000 + n) for n, c in enumerate(";&|\n(){}#<>")}  # stand-ins for quoted separators
 RESTORE = {ord(v): k for k, v in PLACEHOLDERS.items()}
+RESTORE_CHARS = "".join(PLACEHOLDERS.values())
 COMMENT_START = set(" \t\n;&|()")  # a word starts right after one of these, so a # there starts a comment
 REDIRECT_OP = re.compile(r"&>>?|<>|<&|>>|>&|>\||[<>]")  # its & or | is part of it, not a separator: 2>&1, >|, &>
 # a redirect word from prescan(), whose & and | are placeholders. What follows the operator is its file
@@ -153,11 +154,13 @@ def ansi_c(cmd: str, j: int) -> tuple[str, int]:
     if not m:
         return (nxt if nxt in "\\'\"?" else "\\" + nxt), j + 2
     code = m.group()
-    if code[0] == "c":  # a control character: \c? is DEL, \c\\ uses both backslashes, and \c' is text
+    if code[0] == "c":  # a control character: \c? is DEL, and \c' is text
         if code[1] == "'":
             return "\\c", j + 2
-        end = m.end() + (code[1] == "\\" and cmd[m.end():m.end() + 1] == "\\")
-        return ("\x7f" if code[1] == "?" else chr(code[1].encode("utf-8", "surrogatepass")[0] & 31)), end
+        if code[1] == "\\":  # bash pairs this \ with the next character, so \c\' doesn't end the string
+            after = cmd[m.end():m.end() + 1]
+            return "\x1c" + ("" if after == "\\" else after), m.end() + 1
+        return ("\x7f" if code[1] == "?" else chr(code[1].encode("utf-8", "surrogatepass")[0] & 31)), m.end()
     value = int(code, 8) if code[0] in "01234567" else int(code[1:], 16)
     return chr(value & 0xFF if code[0] in "01234567" else min(value, 0x10FFFF)), m.end()
 
@@ -333,6 +336,8 @@ def prescan(cmd: str, shifts: bool) -> tuple[str, list[str], list[int]]:
     commands inside to be checked on their own, and which of them are in a >(...), reading what the command writes.
     Each redirect becomes a word of its own (x>f is x >f), and heredoc bodies are data (commit messages, PR bodies),
     not commands: drop them, keeping the line each starts on. shifts: read a << in $((…)) and the like as a shift."""
+    if set(cmd) & set(RESTORE_CHARS):  # one of ours, typed: eval and bash -c would read it back as ; or #
+        raise ValueError("a placeholder character")
     out, inner, writes, quote, i, heredocs, lines, nest = [], [], [], None, 0, [], {}, [0, 0, 0]
     while i < len(cmd):
         c = cmd[i]
@@ -356,6 +361,8 @@ def prescan(cmd: str, shifts: bool) -> tuple[str, list[str], list[int]]:
             if j >= len(cmd):
                 raise ValueError("unbalanced quotes")
             text = "".join(text).split("\0")[0]  # bash ends the string at a NUL
+            if any("\ue000" <= ch <= "\ue0ff" for ch in text):  # $'\ue008' would read back as # in eval or bash -c
+                raise ValueError("a placeholder character")
             out.append("'" + "".join(PLACEHOLDERS.get(ch, ch) for ch in text).replace("'", "'\"'\"'") + "'")
             i = j + 1
         elif c == "#" and quote is None and (not out or out[-1] in COMMENT_START):  # a comment runs to the line's end
