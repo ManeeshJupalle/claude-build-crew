@@ -48,4 +48,5 @@ Add a `<stack>_checks(root)` that returns `(name, command, tool)` tuples and add
 ## Pull requests
 - Conventional Commit titles (`feat(gates): …`, `fix(guard): …`). `next_version.py` uses them to pick the next version.
 - CI must be green: tests on Linux, macOS and Windows, shellcheck, and plugin validation.
+- Changing the guard: run `python tests/guard_diff.py` and say in the PR why each command it lists is allowed now.
 - Keep docs short. If the code already says it clearly, don't repeat it in Markdown.
