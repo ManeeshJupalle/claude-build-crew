@@ -697,6 +697,7 @@ PS_BLOCKED = [
     "git switch main; if (-not $?) { git switch -c fix/x }; git push origin HEAD",
     "git checkout main; ($x -and (git checkout -b feat/y)); git push",
     "git checkout main; try { git checkout -b feat/y } catch { }; git merge feat/z",
+    "git checkout main; git push origin $(if ($x) {'HEAD'; git checkout -b feat/y})",
     # '-' pieces after an assignment or a dot, or after an empty string
     "$o = git reset ('--' + 'hard')",
     ". git reset ('--' + 'hard')",
@@ -704,7 +705,7 @@ PS_BLOCKED = [
     # a later statement in a command group is output too, and PowerShell passes it on as an argument
     "git push origin $(Get-Date; '--force')",
     # a group left open is still checked
-    "$(1; git push origin --force",
+    "$(1; git push origin ('--force')",
 ]
 
 PS_UNPARSEABLE = ["git commit -m 'unbalanced", "git push --force`",
@@ -782,6 +783,8 @@ PS_ALLOWED = [
     "Remove-Item ($file + '-old')",
     "git commit -m ($msg -replace '-', ' ')",
     "git switch -c feat/y; if ($?) { git commit -m 'feat: y' }",
+    "git checkout -b ((Get-Date -Format yyyyMMdd) + '-fix')",
+    "git checkout -b (($prefix) + '-' + $n)",
 ]
 
 

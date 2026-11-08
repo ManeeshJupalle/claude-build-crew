@@ -1053,8 +1053,8 @@ def check_ps_tokens(tokens: list, grouping: bool, state: dict, depth: int, stdin
             if v[2] is not None:
                 v[2].append(word)
 
-    def statement_reason(v):
-        return check_ps_segment(v[2], state, depth, v[3] or stdin) if v[2] else None
+    def statement_reason(v):  # on a copy of the branch state: $(if ($x) {'HEAD'; git checkout -b y}) may not switch
+        return check_ps_segment(v[2], dict(state), depth, v[3] or stdin) if v[2] else None
 
     for n, t in enumerate(tokens + [None]):  # None ends the last command
         opens = t is OPEN or t is BRACE
@@ -1068,6 +1068,8 @@ def check_ps_tokens(tokens: list, grouping: bool, state: dict, depth: int, stdin
             if reason:
                 return reason
             add(SUBST)
+            if values:  # ((Get-Date) + '-fix'): the value starts with its output, not with the '-'
+                values[-1][6] = False
             # a statement in it that holds a value outputs it too, and PowerShell passes each one on as an argument:
             # git push origin $(Get-Date; '--force')
             level, value = 0, False
@@ -1075,7 +1077,7 @@ def check_ps_tokens(tokens: list, grouping: bool, state: dict, depth: int, stdin
                 level += (b is OPEN or b is BRACE) - (b is CLOSE)
                 if level == 0 and b is SEP:
                     value = not ps_command_word(body[k + 1:k + 2])
-                elif value and isinstance(b, str):
+                elif value and isinstance(b, str) and not (b[:1] == "-" and not isinstance(b, Quoted)):  # $a -f $b
                     add(b)
             skip = 1
         elif not grouping and opens:
@@ -1093,13 +1095,15 @@ def check_ps_tokens(tokens: list, grouping: bool, state: dict, depth: int, stdin
             if reason:
                 return reason
             v = values.pop()
-            owner = strip_ps_assignment(next((u[2] for u in reversed(values) if u[2]), seg))[1]  # its command
-            owner = owner[1:] if owner[:1] == ["."] else owner
-            if v[4] and v[5] and owner and prog_name(owner[0]) in PS_DASH_CHECKED:
-                return f"PowerShell builds this {prog_name(owner[0])} argument from '-' pieces, so it can't be verified."
-            if values:
+            if v[4] and v[5]:  # the command it's an argument of, past $o = and a dot: its first words are enough
+                owner = strip_ps_assignment(next((u[2] for u in reversed(values) if u[2]), seg)[:64])[1]
+                owner = owner[1:] if owner[:1] == ["."] else owner
+                if owner and prog_name(owner[0]) in PS_DASH_CHECKED:
+                    return f"PowerShell builds this {prog_name(owner[0])} argument from '-' pieces, so it can't be verified."
+            if values:  # (('--') + 'force') builds on what the inner group made; ((Get-Date) + '-x') doesn't start with -
                 values[-1][4] |= v[4]
                 values[-1][5] |= v[5]
+                values[-1][6] = False
         elif any(v[0] for v in values) and (t is SEP or t is PIPE):  # ('x'; '--force') outputs both
             reason = statement_reason(values[-1])
             if reason:
