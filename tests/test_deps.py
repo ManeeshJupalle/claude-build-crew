@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -108,7 +109,7 @@ def test_deps_lists_what_npm_audit_fix_changed():
 def test_deps_updates_an_npm_copy_in_each_workspace_that_depends_on_it():
     # `npm install` at the root changes the root's package.json, and a workspace's own pin keeps the old version.
     # `dependents` are paths from npm's root, and `-w` reads a path from where npm runs
-    assert "`dependents`" in deps_step(4) and "-w <" in deps_step(4) and "`npm prefix`" in deps_step(4)
+    assert "`dependents`" in deps_step(4) and "-w <" in deps_step(4) and "`npm_root`" in deps_step(4)
 
 
 def test_npm_workspaces_list_each_copy(tmp_path):
@@ -153,6 +154,27 @@ def test_npm_paths_are_from_npms_root(tmp_path):
         ("minimist", "packages/b-dir/node_modules/minimist", True, ["packages/b-dir"]),
         ("left-pad", "node_modules/left-pad", None, ["packages/b-dir"])]
     assert ["prefix"] in calls(tmp_path) and ["outdated", "--json", "--long"] in calls(tmp_path)
+
+
+@pytest.mark.parametrize("linked", [False, True])
+def test_npm_root_is_the_folder_npm_masks(tmp_path, linked):
+    # npm prefix prints a UUID in a folder's name as ***, so there's no such folder to cd to. Run from a workspace's
+    # folder, npm's root is above it. Through a link, npm sees its folder as the OS gives it: resolved, except on Windows
+    real = tmp_path / "123e4567-e89b-12d3-a456-426614174000"
+    (real / "packages" / "b").mkdir(parents=True)
+    (real / "packages" / "b" / "package.json").write_text("{}", encoding="utf-8")
+    root = real
+    if linked:
+        root = tmp_path / "link"
+        try:
+            root.symlink_to(real, target_is_directory=True)
+        except OSError:  # Windows without developer mode
+            pytest.skip("can't make a symlink")
+    seen = root if os.name == "nt" else real
+    code, out = gate(tmp_path, {}, {"prefix": {"stdout": str(seen).replace(real.name, "***") + "\n"},
+                                    "outdated": {"stdout": ""}, "audit": {"stdout": AUDIT_CLEAN}},
+                     env={"CLAUDE_PROJECT_DIR": str(root / "packages" / "b")})
+    assert code == 0 and out["npm_root"] == str(seen)
 
 
 def test_python_outdated_and_vulnerable(tmp_path):

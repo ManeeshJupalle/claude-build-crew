@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+### Fixed
+- `deps.py` reports npm's root as `npm_root`, and `/deps` installs an npm update from there. Before, it went to the folder `npm prefix` prints, which doesn't exist when a folder's name has a UUID in it: npm prints that as `***`. (#PR)
 
 ## [0.5.1] - 2026-11-07
 ### Added
