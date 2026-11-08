@@ -7,7 +7,8 @@
 ### Security
 - The guard catches more ways past it in Bash: (#62)
   - a wrapper option that takes no value, which hid the command after it: `env -i git …`, `sudo -n …`, `sudo -s …`, `command -p …`, `time -p …`. Each wrapper has its own options, so `env -C dir`, `exec -a name` and `sudo -nu root` skip their values
-  - `env -S '…'` and `--split-string`, whose string env splits into the command
+  - `env -S '…'` and `--split-string`, whose string env splits into the command, reading `#` and `\c` as env does
+  - `timeout` with a duration in another form: `timeout 1e3 git push --force`
   - `builtin` as a wrapper, and `export` after one: `command export x HUSKY=0`
   - a command, or git's or gh's subcommand, that xargs reads: `echo 'push --force' | xargs git`, `xargs -I{} {} push`, `xargs env`. Also `xargs cmd /c` and `xargs pwsh -c`, which run what xargs adds as code
   - a GraphQL query from a shell variable: `-f query="$Q"`

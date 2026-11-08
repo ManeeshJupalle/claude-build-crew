@@ -25,7 +25,7 @@ WRAPS = ["@@", "x; @@", "x && @@", "x || @@", "x | @@", "@@ &", "(@@)", "{ @@; }
          "command @@", "nice -n 5 @@", "timeout 60 @@", "if x; then @@; fi", "for i in 1; do @@; done", "a=1 @@",
          "@@ 2>/dev/null", "@@ >/dev/null 2>&1", "cat <<EOF\nbody\nEOF\n@@", "cat <<'EOF'\n$(x)\nEOF\n@@",
          "# x\n@@", "x\n@@", ": $((1 << 2)) ${a[1]}\n@@", "((x<<y)); @@", "x | tee >(@@)", "env -i @@",
-         "x | xargs -n1 @@"]
+         "x | xargs -n1 @@", "x | xargs -iI @@", "sudo --login @@", "timeout 1e3 @@"]
 PS_DANGER = ["git push --force", "git push origin ('--force')", "git commit -n -m x", "Remove-Item -Recurse C:\\",
              "$env:HUSKY = 0", "Set-Item env:HUSKY 0", "gh pr merge 1", "git reset --hard", "rm -r -fo $HOME"]
 PS_WRAPS = ["@@", "x; @@", "x | @@", "$(@@)", "@(@@)", "& { @@ }", "if ($x) { @@ }", "try { @@ } catch { }",

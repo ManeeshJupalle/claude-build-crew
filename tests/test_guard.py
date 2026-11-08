@@ -400,6 +400,12 @@ BLOCKED = [
     "env -C dir git push --force",
     "env --chd dir git push --force",
     "builtin eval 'git push --force'",
+    "echo x | xargs -iI git push --force",               # -i's value is only ever the rest of its word
+    "echo x | xargs -ea gh pr merge 1",
+    "sudo -hu git push --force",
+    "sudo --login git push --force",                    # an exact name wins: --login, not --login-class
+    "timeout 1e3 git push --force",                     # timeout takes one duration, in any form
+    "timeout inf git push --force",
     # env -S splits its string into words
     "env -S 'git push --force'",
     "env -S'git push --force'",
@@ -407,6 +413,8 @@ BLOCKED = [
     "env -S 'x=1 HUSKY=0 git commit -m x'",
     "env -S 'git\\_push\\_--force'",
     "env -S \"'git push --force\"",
+    "env -S 'git push origin feat#1 --force'",          # a # starts a comment only at a word's start
+    "env -S 'git\\c' push --force",                     # \c ends the string
     # export after a wrapper sets what it gets too
     "command export x HUSKY=0; git commit -m x",
     "builtin export x HUSKY=0; git commit -m x",
@@ -590,6 +598,9 @@ ALLOWED = [
     "nice -n 10 git log",
     "git diff --name-only | xargs git add",
     "git branch --merged | grep -v main | xargs git branch -d",
+    "ls -d */ | xargs -I{} git -C {} status",          # -I's string as -C's folder can't move the subcommand
+    "env -S 'git status # what changed'",
+    "timeout -k 5 10 npm test",
     "ls | xargs -n1 gh pr view",
     "ls *.ps1 | xargs pwsh -NoProfile -File lint.ps1",
     "gh api graphql -f query='query($owner: String!) { repositoryOwner(login: $owner) { id } }' -F owner=\"$OWNER\"",
@@ -881,6 +892,8 @@ def test_tracks_branch_switch_inside_one_command(repo):
     assert guard("{ git commit -m x; }; git switch -c feat/y", cwd=repo) == 2  # the commit runs on main
     # bash reads this << as a heredoc, as a[ is a subscript only in an assignment: the switch in its body never runs
     assert guard("echo a[ <<EOF\ngit switch -c feat/y\nEOF\ngit commit -m x", cwd=repo) == 2
+    # one reading of this << runs the switch to main: what follows starts there
+    assert guard("git switch -c feat/y; eval $'((x<<y))\ngit switch main\ny'; git commit -m x", cwd=repo) == 2
 
 
 def test_push_head_resolves_to_current_branch(repo, feature_repo=None):
@@ -920,7 +933,8 @@ def test_blocks_commands_too_long_or_slow_to_check(monkeypatch):
     assert res.returncode == 2 and b"too long" in res.stderr
     for cmd, tool in (("cat <<" + "A" * 99_000, "Bash"), ("cat <<A\n" * 12_000, "Bash"),
                       ("x=$(cat <<A\nA\n)\n" * 5_000, "Bash"), ("@'\n" * 30_000, "PowerShell"),
-                      ("si" + " env:A" * 16_000 + "; git push --force", "PowerShell")):
+                      ("si" + " env:A" * 16_000 + "; git push --force", "PowerShell"),
+                      ("env " + "-S" * 12_000 + "-i true; git push --force", "Bash")):  # each -S splits the rest
         start = time.monotonic()
         run_guard(cmd, tool)
         assert time.monotonic() - start < 10, cmd[:10]  # no regex that rescans the rest of the command

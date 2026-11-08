@@ -31,21 +31,24 @@ MERGE_GATE = f'bash "{PLUGIN_ROOT}/run.sh" gates/merge_gate.py <PR> --merge'
 SEPARATORS = {"&&", "||", ";", "|", "&", "\n", "|&", ";;"}
 WRAPPERS = {"sudo", "command", "builtin", "exec", "time", "nice", "ionice", "nohup", "env", "xargs", "timeout",
             "stdbuf", "caffeinate", "chronic"}
-# each wrapper's options that take a value: the rest of the word (-n5, --user=x), or else the next word. A long one can
-# be shortened (env --chd). The others take none: env -i git runs git. xargs's -e, -i and -l take one only in the word
-WRAPPER_VALUES = {
-    "sudo": ("aCcDgpRrTtUu", ("--auth-type", "--chdir", "--chroot", "--close-from", "--command-timeout", "--group",
-                              "--host", "--login-class", "--other-user", "--prompt", "--role", "--type", "--user")),
-    "env": ("aCLPSUu", ("--argv0", "--chdir", "--split-string", "--unset")),
-    "xargs": ("adEIJLnPRsS", ("--arg-file", "--delimiter", "--max-args", "--max-chars", "--max-procs",
-                              "--process-slot-var")),
-    "exec": ("a", ()),
-    "time": ("fo", ("--format", "--output")),
-    "nice": ("n", ("--adjustment",)),
-    "ionice": ("cnpPu", ("--class", "--classdata", "--pid", "--pgid", "--uid")),
-    "timeout": ("ks", ("--kill-after", "--signal")),
-    "stdbuf": ("eio", ("--error", "--input", "--output")),
-    "caffeinate": ("tw", ()),
+# each wrapper's options that take a value: letters whose value is the rest of the word or else the next word (-n5,
+# -n 5), letters whose value can only be the rest of the word (xargs -i{}), and long options, where one ending in = takes
+# a value. A long one can be shortened (env --chd), but an exact name wins: sudo --login takes none. The others take
+# none: env -i git runs git
+WRAPPER_OPTIONS = {
+    "sudo": ("aCcDgpRrTtUu", "h", ("--auth-type=", "--chdir=", "--chroot=", "--close-from=", "--command-timeout=",
+                                   "--group=", "--host=", "--login", "--login-class=", "--other-user=", "--prompt=",
+                                   "--role=", "--type=", "--user=")),
+    "env": ("aCLPSUu", "", ("--argv0=", "--chdir=", "--split-string=", "--unset=")),
+    "xargs": ("adEIJLnPRsS", "eil", ("--arg-file=", "--delimiter=", "--max-args=", "--max-chars=", "--max-procs=",
+                                     "--process-slot-var=")),
+    "exec": ("a", "", ()),
+    "time": ("fo", "", ("--format=", "--output=")),
+    "nice": ("n", "", ("--adjustment=",)),
+    "ionice": ("cnpPu", "", ("--class=", "--classdata=", "--pid=", "--pgid=", "--uid=")),
+    "timeout": ("ks", "", ("--kill-after=", "--signal=")),
+    "stdbuf": ("eio", "", ("--error=", "--input=", "--output=")),
+    "caffeinate": ("tw", "", ()),
 }
 # git config from the environment, in any case: Windows names ignore case, so git_config_parameters works there.
 # Not HUSKY or SKIP: lowercase skip=1 is an everyday shell variable.
@@ -252,7 +255,8 @@ def closing(cmd: str, i: int, lines: dict, shifts: bool) -> int:
         if c == "\\" and quote != "'":
             j += 2
             continue
-        nest_step(cmd, j, quote, nest)
+        if c in "{}[]()":
+            nest_step(cmd, j, quote, nest)
         if quote:
             quote = None if c == quote else quote
         elif c in "'\"":
@@ -372,7 +376,8 @@ def prescan(cmd: str, shifts: bool) -> tuple[str, list[str], list[int]]:
             heredocs = []
             i = end if end >= 0 else i + 1
         else:
-            nest_step(cmd, i, quote, nest)
+            if c in "{}[]()":
+                nest_step(cmd, i, quote, nest)
             out.append(PLACEHOLDERS[c] if quote and c in PLACEHOLDERS else c)
             i += 1
     return "".join(out), inner, writes
@@ -405,42 +410,66 @@ def segments(tokens: list[str], braces: bool) -> list[tuple[list[str], bool]]:
 
 def wrapper_option(wrapper: str, seg: list[str], i: int) -> tuple[int, str | None]:
     """How many words the wrapper's option at seg[i] takes, and env -S's string if it's that one."""
-    t, (short, longs) = seg[i], WRAPPER_VALUES.get(wrapper, ("", ()))
+    t, (short, optional, longs) = seg[i], WRAPPER_OPTIONS.get(wrapper, ("", "", ()))
     nxt = seg[i + 1] if i + 1 < len(seg) else ""
     if t.startswith("--"):
         name, eq, value = t.partition("=")
-        takes = len(name) > 2 and any(o.startswith(name) for o in longs)
+        exact = name in longs or name + "=" in longs
+        takes = name + "=" in longs if exact else len(name) > 2 and any(o.startswith(name) and o[-1] == "=" for o in longs)
         n, value = (2, nxt) if takes and not eq else (1, value)
         split = takes and wrapper == "env" and "--split-string".startswith(name)
     else:
-        k = next((k for k, ch in enumerate(t[1:], 1) if ch in short), None)
-        if k is None:
+        k = next((k for k, ch in enumerate(t[1:], 1) if ch in short + optional), None)
+        if k is None or t[k] in optional:  # an optional value is only ever the rest of the word: xargs -iI git
             return 1, None
         n, value = (1, t[k + 1:]) if t[k + 1:] else (2, nxt)
         split = wrapper == "env" and t[k] == "S"
     return n, (value if split else None)
 
 
+def env_split(text: str) -> list[str]:
+    """The words env -S makes of its string: \\_ separates words too, \\c ends the string, and a # that starts a word
+    starts a comment (feat#1 is a word)."""
+    quote, k = None, 0
+    while k < len(text):
+        c = text[k]
+        if c == "\\" and quote != "'":
+            if text[k + 1:k + 2] == "c" and not quote:
+                break
+            k += 2
+            continue
+        if quote:
+            quote = None if c == quote else quote
+        elif c in "'\"":
+            quote = c
+        elif c == "#" and text[k - 1:k] in ("", " ", "\t", "\n"):
+            break
+        k += 1
+    return shlex.split(text[:k].replace("\\_", " "))
+
+
 def strip_prefix(seg: list[str]) -> tuple[list[str], list[str], list[tuple[str, list[str]]]]:
     """Split off env assignments and wrappers: `FOO=1 timeout 60 nice -n 5 git ...` -> `git ...`. Returns the prefix,
     the command, and each wrapper with its options. env -S splits its string into words, which can be options,
     assignments or the command: env -S 'HUSKY=0 git commit'. Raises ValueError if it can't."""
-    seg, i, wrappers = list(seg), 0, []
+    seg, i, wrappers, splits, duration = list(seg), 0, [], 0, False
     while i < len(seg):
         t = seg[i]
         if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", t) or (t in KEYWORDS and not wrappers):
             i += 1
         elif prog_name(t) in WRAPPERS:
             wrappers.append((prog_name(t), i + 1))
-            i += 1
+            i, duration = i + 1, prog_name(t) == "timeout"
         elif wrappers and t.startswith("-"):
             n, split = wrapper_option(wrappers[-1][0], seg, i)
             if split is None:
                 i += n
-            else:  # \_ separates words too
-                seg[i:i + n] = shlex.split(split.replace("\\_", " "), comments=True)
-        elif wrappers and re.match(r"^[\d.]+[smhd]?$", t):  # timeout 60
-            i += 1
+            elif splits == 8:  # each env -S splits the rest again: -S-S-S... takes quadratic time
+                raise ValueError("env -S nested too deep")
+            else:
+                seg[i:i + n], splits = env_split(split), splits + 1
+        elif duration:  # timeout takes one duration, in any form: 60, 1e3, inf
+            i, duration = i + 1, False
         else:
             break
     ends = [start - 1 for _, start in wrappers[1:]] + [i]
@@ -824,12 +853,16 @@ def git_subcommand_at(args: list[str]) -> int:
     return i
 
 
-def xargs_picks(prog: str, args: list[str], at: int) -> bool:
+def xargs_picks(prog: str, args: list[str], at: int, one_word: bool) -> bool:
     """Whether what xargs adds at args[at] can choose what prog runs: git's or gh's subcommand, or the code cmd or
     PowerShell runs. cmd reads its whole command line again, and PowerShell joins its arguments into one command,
-    unless -File runs a script, which gets them as arguments."""
+    unless -File runs a script, which gets them as arguments. one_word: it fills one word, as -I's string does, so as
+    git -C's folder it can't move the subcommand, though as -c's setting it can turn hooks off."""
     if prog == "git":
-        return at <= git_subcommand_at(args)
+        sub = git_subcommand_at(args)
+        if one_word and at < sub:
+            return args[at - 1:at] in (["-c"], ["--config-env"]) or args[at].startswith(("-c", "--config-env"))
+        return at <= sub
     if prog == "gh":
         return at < 2
     if prog in POWERSHELLS:
@@ -861,7 +894,7 @@ def check_segment(seg: list[str], state: dict, depth: int, stdin: bool = False) 
         return None
     prog = prog_name(seg[0])
     args = seg[1:]
-    if at is not None and prog not in SHELLS and xargs_picks(prog, args, at - 1):
+    if at is not None and prog not in SHELLS and xargs_picks(prog, args, at - 1, len(xargs_replace(xargs)[1]) == 1):
         return f"What xargs reads can choose what {prog} runs, so it can't be verified."
     if prog in SHELLS:
         script, command = shell_operand(args)
@@ -1212,17 +1245,23 @@ def check(cmd: str, depth: int = 0, state: dict | None = None, shell: str = "bas
             (text, tuple(inner), tuple(writes)) for text, inner, writes in readings)]
     except ValueError:
         return "Could not parse this command (unbalanced quotes?), so it can't be verified."
-    begin = dict(state)
+    begin, ends, checked = dict(state), [], {}
     for tokens, inner, writes in readings:
         state.clear()
         state.update(begin)
         # commands inside $(...), backticks and <(...) run too, reading the stdin of the command they're in, and one
-        # in >(...) reads what that command writes: x | y "$(bash)", x | tee >(bash)
+        # in >(...) reads what that command writes: x | y "$(bash)", x | tee >(bash). Both readings often hold the
+        # same ones: check them once
         reads = stdin or any(piped or drop_redirects(seg)[1] for seg, piped in segments(tokens, False))
-        for k, sub in enumerate(inner):
-            reason = check(sub, depth + 1, state, stdin=reads or k in writes)
-            if reason:
-                return reason
+        key = (inner, writes, reads)
+        if key not in checked:
+            for k, sub in enumerate(inner):
+                reason = check(sub, depth + 1, state, stdin=reads or k in writes)
+                if reason:
+                    return reason
+            checked[key] = dict(state)
+        state.clear()
+        state.update(checked[key])
         # a standalone { } may group commands ({ git push -f; }) or be a plain argument (-m '{}'), so check both
         # ways, each from the same starting branch
         start = dict(state)
@@ -1235,6 +1274,11 @@ def check(cmd: str, depth: int = 0, state: dict | None = None, shell: str = "bas
                                        piped or redirected or stdin)
                 if reason:
                     return reason
+        ends.append(dict(state))
+    # what runs next starts on the branch a reading ends on, a protected one if either does:
+    # eval $'((x<<y))\ngit switch main\ny'; git commit -m x
+    state.clear()
+    state.update(next((e for e in ends if PROTECTED.match(e.get("branch") or "x")), ends[-1]))
     return None
 
 
