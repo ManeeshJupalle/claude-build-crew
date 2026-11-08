@@ -442,7 +442,7 @@ def env_split(text: str) -> list[str]:
             quote = None if c == quote else quote
         elif c in "'\"":
             quote = c
-        elif c == "#" and text[k - 1:k] in ("", " ", "\t", "\n"):
+        elif c == "#" and (text[k - 1:k] in ("", " ", "\t", "\n") or text[k - 2:k] == "\\_"):
             break
         k += 1
     return shlex.split(text[:k].replace("\\_", " "))
@@ -836,13 +836,13 @@ def with_xargs_input(opts: list[str], args: list[str]) -> list[str]:
     return [w for a in args for w in (words if a.startswith(replace) else [a])]
 
 
-def xargs_input_at(opts: list[str], words: list[str]) -> int | None:
-    """Where the first word xargs adds goes in a command's words: after them, or at its replace string, anywhere in a
-    word (pu{} can be push). None if it adds none."""
+def xargs_input_at(opts: list[str], words: list[str]) -> list[int]:
+    """Where what xargs adds goes in a command's words: after them, or at each word that holds its replace string,
+    anywhere in it (pu{} can be push). None if it adds none."""
     replace, _ = xargs_replace(opts)
     if replace is None:
-        return len(words)
-    return next((k for k, w in enumerate(words) if replace in w), None)
+        return [len(words)]
+    return [k for k, w in enumerate(words) if replace in w]
 
 
 def git_subcommand_at(args: list[str]) -> int:
@@ -853,20 +853,21 @@ def git_subcommand_at(args: list[str]) -> int:
     return i
 
 
-def xargs_picks(prog: str, args: list[str], at: int, one_word: bool) -> bool:
-    """Whether what xargs adds at args[at] can choose what prog runs: git's or gh's subcommand, or the code cmd or
-    PowerShell runs. cmd reads its whole command line again, and PowerShell joins its arguments into one command,
-    unless -File runs a script, which gets them as arguments. one_word: it fills one word, as -I's string does, so as
-    git -C's folder it can't move the subcommand, though as -c's setting it can turn hooks off."""
+def xargs_picks(prog: str, args: list[str], ats: list[int], one_word: bool) -> bool:
+    """Whether what xargs adds at args[at] for each at can choose what prog runs: git's or gh's subcommand, or the
+    code cmd or PowerShell runs. cmd reads its whole command line again, and PowerShell joins its arguments into one
+    command, unless -File runs a script, which gets them as arguments. one_word: each fills one word, as -I's string
+    does, so as git -C's folder it can't move the subcommand, though as -c's setting it can turn hooks off."""
     if prog == "git":
         sub = git_subcommand_at(args)
-        if one_word and at < sub:
-            return args[at - 1:at] in (["-c"], ["--config-env"]) or args[at].startswith(("-c", "--config-env"))
-        return at <= sub
+        if one_word:  # git -C _/.. pu_ --force: every word holding it counts
+            return any(at == sub or at < sub and (args[at - 1:at] in (["-c"], ["--config-env"])
+                                                  or args[at].startswith(("-c", "--config-env"))) for at in ats)
+        return ats[0] <= sub
     if prog == "gh":
-        return at < 2
+        return ats[0] < 2
     if prog in POWERSHELLS:
-        kinds = [ps_param(a) for a in args[:at] if a[:1] in ("-", "/")]
+        kinds = [ps_param(a) for a in args[:ats[0]] if a[:1] in ("-", "/")]
         return next((k for k in kinds if k in ("file", "command", "encoded")), None) != "file"
     return prog == "cmd"
 
@@ -886,15 +887,15 @@ def check_segment(seg: list[str], state: dict, depth: int, stdin: bool = False) 
     # xargs's options, when it runs the command, and where what it reads goes. The command itself, unless xargs runs
     # its default echo: echo git | xargs -I{} {} push, echo git | xargs env
     xargs = next((opts for name, opts in wrappers if name == "xargs"), None)
-    at = None if xargs is None else xargs_input_at(xargs, rest)
-    if at == 0 and (rest or wrappers[-1][0] != "xargs"):
+    ats = [] if xargs is None else xargs_input_at(xargs, rest)
+    if ats[:1] == [0] and (rest or wrappers[-1][0] != "xargs"):
         return "The command xargs runs comes from what it reads, so it can't be verified."
     seg = rest
     if not seg:
         return None
     prog = prog_name(seg[0])
     args = seg[1:]
-    if at is not None and prog not in SHELLS and xargs_picks(prog, args, at - 1, len(xargs_replace(xargs)[1]) == 1):
+    if ats and prog not in SHELLS and xargs_picks(prog, args, [k - 1 for k in ats], len(xargs_replace(xargs)[1]) == 1):
         return f"What xargs reads can choose what {prog} runs, so it can't be verified."
     if prog in SHELLS:
         script, command = shell_operand(args)
@@ -1277,8 +1278,11 @@ def check(cmd: str, depth: int = 0, state: dict | None = None, shell: str = "bas
         ends.append(dict(state))
     # what runs next starts on the branch a reading ends on, a protected one if either does:
     # eval $'((x<<y))\ngit switch main\ny'; git commit -m x
+    end = ends[-1]
+    if len(ends) > 1:  # one that switches nothing stays on the current branch
+        end = next((e for e in ends if PROTECTED.match(e.get("branch") or current_branch() or "x")), end)
     state.clear()
-    state.update(next((e for e in ends if PROTECTED.match(e.get("branch") or "x")), ends[-1]))
+    state.update(end)
     return None
 
 

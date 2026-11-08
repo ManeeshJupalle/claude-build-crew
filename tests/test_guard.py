@@ -423,6 +423,7 @@ BLOCKED = [
     "echo 'push --force' | xargs git",
     "echo 'dir push --force' | xargs git -C",
     "echo sh | xargs -I_ git pu_ --force",
+    "echo sh | xargs -I_ git -C _/.. pu_ --force",       # each word holding it counts, not just -C's folder
     "echo 'pr merge 1' | xargs gh",
     "echo 'merge 1' | xargs gh pr",
     "echo 'push --force' | xargs env git",
@@ -884,6 +885,7 @@ def test_powershell_tracks_branch(repo):
 def test_blocks_commit_and_bare_push_on_protected_branch(repo):
     assert guard("git commit -m x", cwd=repo) == 2  # repo fixture is on main
     assert guard("git push", cwd=repo) == 2
+    assert guard("env -S 'git push origin\\_#x'", cwd=repo) == 2  # \_ ends a word, so #x is a comment
 
 
 def test_tracks_branch_switch_inside_one_command(repo):
