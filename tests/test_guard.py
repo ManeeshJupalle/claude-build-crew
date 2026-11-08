@@ -693,6 +693,18 @@ PS_BLOCKED = [
     "git push origin $(if ($x) {'a'; '--force'})",
     "git push origin @(foreach ($i in 1) {'a'; '--force'})",
     "git commit -m x $(if ($x) {'a'\n'--no-verify'})",
+    # a group that may not run doesn't change the branch later commands run on
+    "git switch main; if (-not $?) { git switch -c fix/x }; git push origin HEAD",
+    "git checkout main; ($x -and (git checkout -b feat/y)); git push",
+    "git checkout main; try { git checkout -b feat/y } catch { }; git merge feat/z",
+    # '-' pieces after an assignment or a dot, or after an empty string
+    "$o = git reset ('--' + 'hard')",
+    ". git reset ('--' + 'hard')",
+    "git reset ('' + '--' + 'hard')",
+    # a later statement in a command group is output too, and PowerShell passes it on as an argument
+    "git push origin $(Get-Date; '--force')",
+    # a group left open is still checked
+    "$(1; git push origin --force",
 ]
 
 PS_UNPARSEABLE = ["git commit -m 'unbalanced", "git push --force`",
@@ -764,6 +776,12 @@ PS_ALLOWED = [
     "git commit -m $(if ($x) {'fix: a'; 'fix: b'})",
     ". .\\scripts\\env.ps1",
     "($x -and (git status))",
+    "git checkout -b ($prefix + '-' + $n)",
+    "git checkout -b ($title.ToLower() -replace ' ', '-')",
+    "git tag ('v' + $ver + '-rc1')",
+    "Remove-Item ($file + '-old')",
+    "git commit -m ($msg -replace '-', ' ')",
+    "git switch -c feat/y; if ($?) { git commit -m 'feat: y' }",
 ]
 
 
@@ -876,7 +894,7 @@ def test_blocks_commands_too_long_or_slow_to_check(monkeypatch):
     for cmd, tool in (("cat <<" + "A" * 99_000, "Bash"), ("cat <<A\n" * 12_000, "Bash"),
                       ("x=$(cat <<A\nA\n)\n" * 5_000, "Bash"), ("@'\n" * 30_000, "PowerShell"),
                       ("si" + " env:A" * 16_000 + "; git push --force", "PowerShell"),
-                      ("('a'; " * 16_000 + ")" * 16_000, "PowerShell"),  # each word joins every open group
+                      ("('a'; " * 14_000 + ")" * 14_000, "PowerShell"),  # each word joins every open group
                       ("$(if ($x) {'a'; " * 5_000 + "})" * 5_000, "PowerShell")):
         start = time.monotonic()
         run_guard(cmd, tool)
@@ -890,6 +908,14 @@ def test_blocks_commands_too_long_or_slow_to_check(monkeypatch):
                  lambda: g.local_branch_exists("x")):
         with pytest.raises(TimeoutError):
             slow()
+
+
+@pytest.mark.parametrize("unit,limit", [("(Join-Path ", 20), ("('a'; ", 50)])
+def test_powershell_refuses_deep_nesting(unit, limit):
+    # each level of groups costs time, so past a depth no real command reaches, the guard refuses
+    assert guard(unit * limit + "x" + ")" * limit, tool="PowerShell") == 0
+    res = run_guard(unit * (limit + 1) + "x" + ")" * (limit + 1), "PowerShell")
+    assert res.returncode == 2 and b"nesting too deep" in res.stderr
 
 
 def hook_command() -> str:

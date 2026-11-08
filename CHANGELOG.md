@@ -2,12 +2,13 @@
 
 ## [Unreleased]
 ### Fixed
-- The guard refuses PowerShell groups nested more than 50 deep. Each level made the check slower: 16,000 took 30 seconds, close to the hook's 60-second limit, after which Claude Code runs the command. (#63)
+- The guard refuses PowerShell groups nested more than 50 deep. Each level made the check slower: 14,000 took 19 seconds, a third of the hook's 60-second limit, after which Claude Code runs the command. (#63)
 
 ### Security
 - The guard catches more ways past it in PowerShell: (#63)
   - a command group inside an expression, whose own groups are its arguments: `($x -and (git push origin ('--force')))`
-  - dot-sourcing a command: `. git push --force`
+  - dot-sourcing a command: `. git push --force`. A branch it switches to now counts too
+  - a later statement in a command group, which PowerShell passes on as an argument: `git push origin $(Get-Date; '--force')`
   - an argument to git, gh, a shell or `Remove-Item` that PowerShell builds from pieces starting with `-`: `('--' + 'force')`, `('-' * 2 + 'force')`. One built some other way, such as from `[char]45`, is still past it (see Limits in the README)
   - a `;` in a `{ }` block inside a value group, where it separates values, not commands: `git push origin $(if ($x) {'a'; '--force'})`
 

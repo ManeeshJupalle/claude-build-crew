@@ -1042,9 +1042,9 @@ def check_ps_tokens(tokens: list, grouping: bool, state: dict, depth: int, stdin
     # values: for each open value group, [whether it's a ( ) group, whose ; and newlines separate values,
     # whether its -words are operators (in an expression, ($a -join "`n"), up to its first ;), the words of
     # its statement after a ; or |, which can be a command: $(1; git push --force), checked on its own too,
-    # whether that statement is piped, whether an operator computes its value, and whether a literal in it starts
-    # with -]. A { } block holds statements, which end the command as usual, unless it's inside a ( ) value group:
-    # $(if ($x) {'a'; '--force'}) outputs both
+    # whether that statement is piped, whether an operator computes its value, whether a literal that starts its
+    # value starts with -, and whether nothing but '' has come yet]. A { } block holds statements, which end the command
+    # as usual, unless it's inside a ( ) value group: $(if ($x) {'a'; '--force'}) outputs both
     seg, piped, skip, values, lead = [], False, 0, [], False
 
     def add(word):
@@ -1061,18 +1061,29 @@ def check_ps_tokens(tokens: list, grouping: bool, state: dict, depth: int, stdin
         if skip and t is not None:
             skip += opens - (t is CLOSE)
         elif not grouping and opens and ps_command_word(tokens[n + 1:n + 2]):
-            # ($x -and (git push origin ('--force'))) runs git with --force
-            reason = check_ps_tokens(tokens[n + 1:ps_group_end(tokens, n)], False, state, depth, stdin, nested + 1)
+            # ($x -and (git push origin ('--force'))) runs git with --force. It may not run at all (if, -and, try), so
+            # a branch it switches to isn't the one later commands run on
+            body = tokens[n + 1:ps_group_end(tokens, n)]
+            reason = check_ps_tokens(body, False, dict(state), depth, stdin, nested + 1)
             if reason:
                 return reason
             add(SUBST)
+            # a statement in it that holds a value outputs it too, and PowerShell passes each one on as an argument:
+            # git push origin $(Get-Date; '--force')
+            level, value = 0, False
+            for k, b in enumerate(body):
+                level += (b is OPEN or b is BRACE) - (b is CLOSE)
+                if level == 0 and b is SEP:
+                    value = not ps_command_word(body[k + 1:k + 2])
+                elif value and isinstance(b, str):
+                    add(b)
             skip = 1
         elif not grouping and opens:
             nxt = tokens[n + 1] if n + 1 < len(tokens) else None
             lead = isinstance(nxt, str) and not isinstance(nxt, Quoted) and nxt.lower() in PS_VALUE_LEADS
             if lead:  # it outputs what it echoes: its literals, and maybe more
                 add(SUBST)
-            values.append([t is OPEN, t is OPEN and not lead, None, False, False, False])
+            values.append([t is OPEN, t is OPEN and not lead, None, False, False, False, True])
             if len(values) > 50:  # each word joins every open group's statement: deep nesting takes quadratic time
                 return "Command nesting too deep to verify."
         elif not grouping and t is CLOSE:
@@ -1082,7 +1093,8 @@ def check_ps_tokens(tokens: list, grouping: bool, state: dict, depth: int, stdin
             if reason:
                 return reason
             v = values.pop()
-            owner = next((u[2] for u in reversed(values) if u[2]), seg)  # the command it's an argument of
+            owner = strip_ps_assignment(next((u[2] for u in reversed(values) if u[2]), seg))[1]  # its command
+            owner = owner[1:] if owner[:1] == ["."] else owner
             if v[4] and v[5] and owner and prog_name(owner[0]) in PS_DASH_CHECKED:
                 return f"PowerShell builds this {prog_name(owner[0])} argument from '-' pieces, so it can't be verified."
             if values:
@@ -1093,12 +1105,15 @@ def check_ps_tokens(tokens: list, grouping: bool, state: dict, depth: int, stdin
             if reason:
                 return reason
             values[-1][1:4] = [False, [], t is PIPE]
+            values[-1][6] = True
         elif isinstance(t, str):
             assign = values and values[-1][1] and not isinstance(t, Quoted) and PS_ASSIGN_WORD.fullmatch(t)
             operator = bool(values) and values[-1][1] and t[:1] == "-" and not isinstance(t, Quoted)
-            if values:  # ('--' + 'force'), ('-{0}force' -f '-')
-                values[-1][4] |= operator or "+" in t or "*" in t
-                values[-1][5] |= isinstance(t, Quoted) and t[:1] == "-" and t[1:2] != " "  # not '- fixed x'
+            if values:  # ('--' + 'force'), ('-{0}force' -f '-'), but not ($prefix + '-' + $n) or '- fixed x'
+                v = values[-1]
+                v[4] |= operator or "+" in t or "*" in t
+                v[5] |= v[6] and isinstance(t, Quoted) and t[:1] == "-" and t[1:2] != " "
+                v[6] = v[6] and (t == "+" or t == "" and isinstance(t, Quoted))  # ('' + '--' + 'force')
             if lead:  # if, echo: not output
                 lead = False
             elif assign:  # ($o = git push --force) runs the command: no longer an expression, and checked too
@@ -1108,10 +1123,13 @@ def check_ps_tokens(tokens: list, grouping: bool, state: dict, depth: int, stdin
                 add(t)
         else:
             reason = check_ps_segment(seg, state, depth, piped or stdin) if seg else None
+            if t is None:  # a group left open never reached its ), where its statement is checked
+                reason = reason or next((r for v in values if (r := statement_reason(v))), None)
             if reason:
                 return reason
             seg, piped = [], t is PIPE or (piped and not seg)
     return None
+
 
 def check(cmd: str, depth: int = 0, state: dict | None = None, shell: str = "bash", stdin: bool = False) -> str | None:
     """stdin: whether the command reads a pipe or a redirect, as when a shell fed by one runs it."""
