@@ -759,6 +759,43 @@ PS_BLOCKED = [
     "($o += git push origin ('--force'))",
     "if ($?) { & ('git') push --force }",
     "try { & ('git') commit -not -m x } catch { }",
+    # a command group in an expression is a command too, whose value groups are its arguments
+    "($x -and (git push origin ('--force')))",
+    "('a' + $(git push origin ('--force')))",
+    "Write-Output ($x -or (git commit -m x ('--no-verify')))",
+    "if ($x -and (git push origin ('-f'))) { }",
+    # dot-sourcing runs the command
+    ". git push --force",
+    "$x = . gh pr merge 1",
+    # an argument PowerShell builds from '-' pieces
+    "git push origin ('--'+'force')",
+    "git commit -m x ('--' + 'no-verify')",
+    "git reset ('--' + 'hard')",
+    "git clean ('-' * 1 + 'fd')",
+    "Remove-Item ('-' + 'Recurse') C:\\",
+    # a ; in a { } block inside a value group separates values too
+    "git push origin $(if ($x) {'a'; '--force'})",
+    "git push origin @(foreach ($i in 1) {'a'; '--force'})",
+    "git commit -m x $(if ($x) {'a'\n'--no-verify'})",
+    # a group that may not run doesn't change the branch later commands run on
+    "git switch main; if (-not $?) { git switch -c fix/x }; git push origin HEAD",
+    "git checkout main; ($x -and (git checkout -b feat/y)); git push",
+    "git checkout main; try { git checkout -b feat/y } catch { }; git merge feat/z",
+    "git checkout main; git push origin $(if ($x) {'HEAD'; git checkout -b feat/y})",
+    # '-' pieces after an assignment or a dot, or after an empty string
+    "$o = git reset ('--' + 'hard')",
+    ". git reset ('--' + 'hard')",
+    "git reset ('' + '--' + 'hard')",
+    # a later statement in a command group is output too, and PowerShell passes it on as an argument
+    "git push origin $(Get-Date; '--force')",
+    "git push origin $(Get-Date; echo --force)",
+    # a statement's own block ends it, also inside $( )
+    "$(if ($x) { 'a'; } git push origin ('--force'))",
+    "Write-Output $(if ($x) { 'a' } git reset ('--hard'))",
+    "$(if ($x) { git status } git push origin ('--force'))",
+    "$(try { 'a' } catch { } git push origin ('--force'))",
+    # a group left open is still checked
+    "$(1; git push origin ('--force')",
 ]
 
 PS_UNPARSEABLE = ["git commit -m 'unbalanced", "git push --force`",
@@ -821,6 +858,32 @@ PS_ALLOWED = [
     "New-Item -Path . -Name notes.txt -Value x",
     "Set-Content -Encoding utf8 notes.txt 'HUSKY=0'",
     "[string] $branch = git branch --show-current",
+    # values built from text that isn't an option, and statements in a block
+    "Write-Host ('-' * 40)",
+    "git commit -m ('- fixed x' + \"`n\" + '- fixed y')",
+    "git log -n ($n + 1)",
+    "git log --format=('%h' + ' %s')",
+    "foreach ($i in 1..3) { Write-Output $i; git status }",
+    "git commit -m $(if ($x) {'fix: a'; 'fix: b'})",
+    ". .\\scripts\\env.ps1",
+    "($x -and (git status))",
+    "git checkout -b ($prefix + '-' + $n)",
+    "git checkout -b ($title.ToLower() -replace ' ', '-')",
+    "git tag ('v' + $ver + '-rc1')",
+    "Remove-Item ($file + '-old')",
+    "git commit -m ($msg -replace '-', ' ')",
+    "git switch -c feat/y; if ($?) { git commit -m 'feat: y' }",
+    "git checkout -b ((Get-Date -Format yyyyMMdd) + '-fix')",
+    "git checkout -b (($prefix) + '-' + $n)",
+    # a group that ends with ; or a newline
+    "if ($x) { git status\n}",
+    "try { git push origin feat/x; } catch { }",
+    "foreach ($f in $files) { git add $f; }",
+    "git commit -m $(git log -1 --format=%s;)",
+    "$(if ($x) { 'a' } else { 'b' })",
+    "git commit -m $(if ($x) { 'fix: a' } else { 'fix: b' })",
+    "$(try { Get-Date } catch { 'never' })",
+    "Write-Output $(foreach ($i in 1..3) { $i * 2 })",
 ]
 
 
@@ -938,6 +1001,8 @@ def test_blocks_commands_too_long_or_slow_to_check(monkeypatch):
     for cmd, tool in (("cat <<" + "A" * 99_000, "Bash"), ("cat <<A\n" * 12_000, "Bash"),
                       ("x=$(cat <<A\nA\n)\n" * 5_000, "Bash"), ("@'\n" * 30_000, "PowerShell"),
                       ("si" + " env:A" * 16_000 + "; git push --force", "PowerShell"),
+                      ("('a'; " * 14_000 + ")" * 14_000, "PowerShell"),  # each word joins every open group
+                      ("$(if ($x) {'a'; " * 5_000 + "})" * 5_000, "PowerShell"),
                       ("env " + "-S" * 12_000 + "-i true; git push --force", "Bash")):  # each -S splits the rest
         start = time.monotonic()
         run_guard(cmd, tool)
@@ -951,6 +1016,14 @@ def test_blocks_commands_too_long_or_slow_to_check(monkeypatch):
                  lambda: g.local_branch_exists("x")):
         with pytest.raises(TimeoutError):
             slow()
+
+
+@pytest.mark.parametrize("unit,limit", [("(Join-Path ", 20), ("('a'; ", 50)])
+def test_powershell_refuses_deep_nesting(unit, limit):
+    # each level of groups costs time, so past a depth no real command reaches, the guard refuses
+    assert guard(unit * limit + "x" + ")" * limit, tool="PowerShell") == 0
+    res = run_guard(unit * (limit + 1) + "x" + ")" * (limit + 1), "PowerShell")
+    assert res.returncode == 2 and b"nesting too deep" in res.stderr
 
 
 def hook_command() -> str:

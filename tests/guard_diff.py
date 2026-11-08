@@ -4,8 +4,11 @@
 
 Both versions read every case in test_guard.py, and commands built from dangerous ones: wrapped, piped, substituted,
 grouped, quoted, on another line, and twice over. It lists each command the other version blocks and this one allows,
-and exits 1 if there's any. Each one is a bypass, or a command the other version wrongly blocked, which the PR says.
+and each this one crashes on, and exits 1 if there's any. Each allowed one is a bypass, or a command the other version
+wrongly blocked, which the PR says. A crash blocks, so it doesn't show as a bypass, but it refuses harmless commands.
 Nothing is run: the guard only reads the commands."""
+from __future__ import annotations
+
 import importlib.util
 import itertools
 import os
@@ -29,7 +32,8 @@ WRAPS = ["@@", "x; @@", "x && @@", "x || @@", "x | @@", "@@ &", "(@@)", "{ @@; }
 PS_DANGER = ["git push --force", "git push origin ('--force')", "git commit -n -m x", "Remove-Item -Recurse C:\\",
              "$env:HUSKY = 0", "Set-Item env:HUSKY 0", "gh pr merge 1", "git reset --hard", "rm -r -fo $HOME"]
 PS_WRAPS = ["@@", "x; @@", "x | @@", "$(@@)", "@(@@)", "& { @@ }", "if ($x) { @@ }", "try { @@ } catch { }",
-            "foreach ($i in 1) { @@ }", "Write-Output (@@)", "$y = @@", "@@ 2>$null", "pwsh -c '@@'", "x\n@@"]
+            "foreach ($i in 1) { @@ }", "Write-Output (@@)", "$y = @@", "@@ 2>$null", "pwsh -c '@@'", "x\n@@",
+            "$(if ($x) {'a'; } @@)"]
 
 
 def load(name: str, path: str):
@@ -47,7 +51,7 @@ def decide(guard, cmd: str, shell: str) -> str | None:
     try:
         return "Command too long to verify." if len(cmd) > guard.MAX_COMMAND else guard.check(cmd, shell=shell)
     except Exception as e:
-        return f"{type(e).__name__}: {e}"
+        return f"crash: {type(e).__name__}: {e}"
 
 
 def corpus() -> list[tuple[str, str]]:
@@ -79,18 +83,20 @@ def main() -> int:
         base = load("guard_base", path)
     head = load("guard_head", os.path.join(ROOT, "hooks", "guard.py"))
     cases = corpus()
-    allowed, blocked = [], 0
+    allowed, crashed, blocked = [], [], 0
     for shell, cmd in cases:
         was, now = decide(base, cmd, shell), decide(head, cmd, shell)
         if was and not now:
-            allowed.append((shell, cmd, was))
+            allowed.append((shell, cmd, f"{ref} blocks it: {was}"))
+        elif (now or "").startswith("crash:") and not (was or "").startswith("crash:"):
+            crashed.append((shell, cmd, now))
         blocked += bool(now and not was)
     sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
-    for shell, cmd, was in allowed:
-        print(f"[{shell}] {cmd!r}\n    {ref} blocks it: {was}")
+    for shell, cmd, why in allowed + crashed:
+        print(f"[{shell}] {cmd!r}\n    {why}")
     print(f"{len(cases)} commands: {len(allowed)} that {ref} blocks are allowed now, {blocked} that it allows are "
-          f"blocked now.")
-    return 1 if allowed else 0
+          f"blocked now, {len(crashed)} that crash the guard now.")
+    return 1 if allowed or crashed else 0
 
 
 if __name__ == "__main__":
