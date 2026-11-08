@@ -2,9 +2,10 @@
 
 ## [Unreleased]
 ### Added
-- `tests/guard_diff.py` runs the guard and another version of it, `origin/main` by default, on the test cases and on dangerous commands wrapped in others, and lists each command that version blocks and this one allows. Use it to review a guard change. (#62)
+- `tests/guard_diff.py` runs the guard and another version of it, `origin/main` by default, on the test cases and on dangerous commands wrapped in others, and lists each command that version blocks and this one allows, or that this one crashes on. Use it to review a guard change. (#62, #63)
 
 ### Fixed
+- The guard refuses PowerShell groups nested more than 50 deep. Each level made the check slower: 14,000 took 19 seconds, a third of the hook's 60-second limit, after which Claude Code runs the command. (#63)
 - `deps.py` reports npm's root as `npm_root`, and `/deps` installs an npm update from there. Before, it went to the folder `npm prefix` prints, which doesn't exist when a folder's name has a UUID in it: npm prints that as `***`. (#64)
 
 ### Security
@@ -17,6 +18,12 @@
   - a GraphQL query from a shell variable: `-f query="$Q"`
   - a shell reading the pipe from a substitution: `… | tee >(bash)`, `… | y "$(bash)"`
   - a `<<` in `((…))`, `$((…))`, `$[…]`, `${…}` or `a[…]=`, which bash reads as a shift, not a heredoc whose body would hide the lines after it. Where bash may still read a heredoc, the guard checks both readings
+- The guard catches more ways past it in PowerShell: (#63)
+  - a command group inside an expression, whose own groups are its arguments: `($x -and (git push origin ('--force')))`
+  - dot-sourcing a command: `. git push --force`. A branch it switches to now counts too
+  - a later statement in a command group, which PowerShell passes on as an argument: `git push origin $(Get-Date; '--force')`, also what an `echo` there outputs
+  - an argument to git, gh, a shell or `Remove-Item` that PowerShell builds from pieces starting with `-`: `('--' + 'force')`, `('-' * 2 + 'force')`. One built some other way, such as from `[char]45`, is still past it (see Limits in the README)
+  - a `;` in a `{ }` block inside a value group, where it separates values, not commands: `git push origin $(if ($x) {'a'; '--force'})`
 - The guard reads `$'…'` escapes as bash does. Before, it dropped each backslash, so `eval $'true\ngit push --force'` read as one harmless command, and `$'\x2d\x2dforce'` wasn't `--force`. (#65)
 
 ## [0.5.1] - 2026-11-07
