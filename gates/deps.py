@@ -81,7 +81,8 @@ def copy_at(depth: int, location) -> str | None:
     return "/".join(parts[depth:] if Path(location).is_absolute() else parts)
 
 
-def npm_deps(root: Path, found: dict, checks: list) -> None:
+def npm_deps(root: Path, found: dict, checks: list) -> str | None:
+    """Returns npm's root, where its paths start."""
     if not (root / "package.json").exists():
         return
     npm = tool("BUILD_CREW_NPM", "npm")
@@ -94,6 +95,10 @@ def npm_deps(root: Path, found: dict, checks: list) -> None:
         checks.append(failed("npm prefix", res))
         return
     depth = len(Path(res.stdout.strip().splitlines()[-1]).parts)
+    # npm prints a UUID in a folder's name as ***, so take the root from the project's path as npm sees it, cut to that
+    # depth. A process sees its folder with symlinks resolved, except on Windows
+    here = os.path.abspath(root) if os.name == "nt" else os.path.realpath(root)
+    npm_root = str(Path(*Path(here).parts[:depth]))
     res, data = call([*npm, "outdated", "--json", "--long"], root)  # --long adds the path -w takes, dependedByLocation
     # exit 1 only means something is outdated; npm reports its own errors as {"error": ...}
     if res.returncode not in (0, 1) or not isinstance(data, dict) or "error" in data or (res.returncode and not data):
@@ -118,7 +123,7 @@ def npm_deps(root: Path, found: dict, checks: list) -> None:
     vulns = data.get("vulnerabilities") if isinstance(data, dict) else None
     if res.returncode not in (0, 1) or not isinstance(vulns, dict) or "error" in data:
         checks.append(failed("npm audit", res))
-        return
+        return npm_root
     checks.append({"name": "npm audit", "status": "PASS"})
     for n, v in vulns.items():
         for node in v.get("nodes") or [None]:  # each affected copy, also one npm outdated didn't list
@@ -127,6 +132,7 @@ def npm_deps(root: Path, found: dict, checks: list) -> None:
             d.update(vulnerable=True, severity=v.get("severity"), direct=bool(v.get("isDirect")),
                      **npm_fix(n, v.get("fixAvailable")),
                      advisories=sorted({a.get("url") or str(a.get("source")) for a in v.get("via", []) if isinstance(a, dict)}))
+    return npm_root
 
 
 def npm_fix(name: str, fa) -> dict:
@@ -233,7 +239,7 @@ def deps() -> None:
     root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or git("rev-parse", "--show-toplevel") or os.getcwd())
     checks: list = []
     found: dict = {}
-    npm_deps(root, found, checks)
+    npm_root = npm_deps(root, found, checks)
     python_deps(root, found, checks)
     ran = [c for c in checks if c["status"] != "SKIPPED"]
     listed = sorted(found.values(), key=lambda d: (not d.get("vulnerable"), d["ecosystem"], d["name"]))
@@ -243,7 +249,8 @@ def deps() -> None:
                "OUTDATED" if listed else
                "PARTLY VERIFIED" if len(ran) < len(checks) else
                "UP TO DATE")
-    out = {"gate": "deps", "root": str(root), "verdict": verdict, "checks": checks, "dependencies": listed}
+    out = {"gate": "deps", "root": str(root), **({"npm_root": npm_root} if npm_root else {}), "verdict": verdict,
+           "checks": checks, "dependencies": listed}
     if not ran:
         out["note"] = "no dependency check ran" + (" (all tools missing)" if checks else " (no npm or Python project)")
     emit(out, verdict in ("OUTDATED", "PARTLY VERIFIED", "UP TO DATE"))
