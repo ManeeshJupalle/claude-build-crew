@@ -870,6 +870,11 @@ PS_ALLOWED = [
     "git switch -c feat/y; if ($?) { git commit -m 'feat: y' }",
     "git checkout -b ((Get-Date -Format yyyyMMdd) + '-fix')",
     "git checkout -b (($prefix) + '-' + $n)",
+    # a group that ends with ; or a newline
+    "if ($x) { git status\n}",
+    "try { git push origin feat/x; } catch { }",
+    "foreach ($f in $files) { git add $f; }",
+    "git commit -m $(git log -1 --format=%s;)",
 ]
 
 

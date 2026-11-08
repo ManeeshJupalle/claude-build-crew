@@ -1243,7 +1243,7 @@ def check_ps_tokens(tokens: list, grouping: bool, state: dict, depth: int, stdin
                 level += (b is OPEN or b is BRACE) - (b is CLOSE)
                 if level == 0 and b is SEP:
                     value = not ps_command_word(body[k + 1:k + 2])
-                    echo = str(body[k + 1:k + 2][0]).lower() in ("echo", "write", "write-output") if value else False
+                    echo = value and str((body[k + 1:k + 2] or [""])[0]).lower() in ("echo", "write", "write-output")
                 # its -words are operators ($a -f $b), unless it echoes them: $(Get-Date; echo --force)
                 elif value and isinstance(b, str) and (echo or not (b[:1] == "-" and not isinstance(b, Quoted))):
                     add(b)
