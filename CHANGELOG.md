@@ -4,6 +4,9 @@
 ### Fixed
 - `deps.py` reports npm's root as `npm_root`, and `/deps` installs an npm update from there. Before, it went to the folder `npm prefix` prints, which doesn't exist when a folder's name has a UUID in it: npm prints that as `***`. (#64)
 
+### Security
+- The guard reads `$'…'` escapes as bash does. Before, it dropped each backslash, so `eval $'true\ngit push --force'` read as one harmless command, and `$'\x2d\x2dforce'` wasn't `--force`. (#65)
+
 ## [0.5.1] - 2026-11-07
 ### Added
 - `stale-approval` and `approved-merge` evals: the same request to merge a PR, with an approval that does or doesn't cover its head commit. An eval can't merge real PRs, so a stand-in `gh` in `evals/bin/` plays the PR. (#50)

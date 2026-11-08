@@ -388,6 +388,14 @@ BLOCKED = [
     # GNU rm takes a long option's unique prefix
     "rm --rec ~",
     "rm --recu -f /",
+    # $'...' escapes: \n is a newline and \x2d a -, as bash reads them
+    "eval $'true\\ngit push --force'",
+    "bash -c $'true\\ngit push --force'",
+    "git push $'\\x2d\\x2dforce'",
+    "git push $'\\55\\55force'",
+    "git push $'\\u002d-force'",
+    "git commit -m x $'\\x2dn'",
+    "git push origin $'\\x6d\\x61\\x69\\x6e'",
 ]
 
 # blocked because they can't be parsed, the only cases allowed to block that way
@@ -526,6 +534,10 @@ ALLOWED = [
     "gh api repos/o/graphql-tools/issues --input body.json",
     "gh api repos/o/r/contents/schema.graphql -X PUT -f message=x -F content=@schema.graphql",
     "gh api graphql -f query='query($owner: String!) { repositoryOwner(login: $owner) { id } }' -f owner=\"$(whoami)\"",
+    "git commit -m $'line one\\nline two'",
+    "printf $'%s\\n' a b",
+    "echo $'\\x41\\té'",
+    "git commit -m $'fix: don\\'t crash'",
 ]
 
 # commands from Claude Code's PowerShell tool
