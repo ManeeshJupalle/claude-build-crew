@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+
+## [0.5.2] - 2026-11-09
 ### Added
 - `tests/guard_diff.py` runs the guard and another version of it, `origin/main` by default, on the test cases and on dangerous commands wrapped in others, and lists each command that version blocks and this one allows, or that this one crashes on. Use it to review a guard change. (#62, #63)
 

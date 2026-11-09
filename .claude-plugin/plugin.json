@@ -1,7 +1,7 @@
 {
   "name": "build-crew",
   "displayName": "build-crew",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "A small crew of Claude Code agents that plan, build, review, merge, release and deploy. Code for agents, docs for humans: the checks that matter are code gates that print JSON, not an agent's say-so.",
   "author": {
     "name": "Maneesh Jupalle",
