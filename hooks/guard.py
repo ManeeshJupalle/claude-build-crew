@@ -8,7 +8,8 @@ It parses the command into shell words instead of pattern-matching raw text, so
     (&&, ;, |, if/then, { }, bash -c, pwsh -c, cmd /c, $(...)).
 PowerShell commands get their own tokenizer, since its quoting and escapes differ from Bash.
 
-Exit 2 = block (stderr is shown to Claude). Exit 0 = allow.
+Exit 2 = block (stderr is shown to Claude). Exit 0 = allow, or with a permission prompt on stdout,
+ask the user: for a commit, push or merge on a protected branch.
 This is a seatbelt, not a sandbox: see "Limits" in the README.
 """
 from __future__ import annotations
@@ -25,6 +26,9 @@ import time
 import urllib.parse
 
 PROTECTED = re.compile(r"^(main|master|develop|release/.+)$")
+# a commit, push or merge on a protected branch needs the user's yes, not a block: main() checks a refused command
+# again without those rules, and if nothing else refuses it, has Claude Code ask the user
+PROTECT = True
 # the full command, so an agent stopped from merging doesn't have to hunt for the plugin's folder
 PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__))).replace("\\", "/")
 MERGE_GATE = f'bash "{PLUGIN_ROOT}/run.sh" gates/merge_gate.py <PR> --merge'
@@ -594,10 +598,10 @@ def check_git(args: list[str], state: dict) -> str | None:
                 return f"git push {r} deletes a remote branch; forbidden. Push one feature branch."
             if "*" in r:  # refs/heads/*:refs/heads/* pushes main too
                 return f"git push {r} pushes many branches; forbidden. Push one feature branch."
-            if is_protected_ref(r, branch):
-                return "Pushing to a protected branch is forbidden. Open a PR."
-        if not refspecs and PROTECTED.match(branch or "x"):
-            return f"You are on protected branch '{branch}'. Create a feature branch first."
+            if PROTECT and is_protected_ref(r, branch):
+                return "This pushes to a protected branch."
+        if PROTECT and not refspecs and PROTECTED.match(branch or "x"):
+            return f"This pushes protected branch '{branch}'."
         return None
 
     if sub == "config":  # reading core.hooksPath or an alias is fine; setting or unsetting one isn't
@@ -637,8 +641,8 @@ def check_git(args: list[str], state: dict) -> str | None:
                     return "Skipping git hooks (-n / --no-verify) is forbidden."
             j += 1
         branch = state.get("branch") or current_branch()
-        if PROTECTED.match(branch or "x"):
-            return f"You are on protected branch '{branch}'. Create a feature branch first."
+        if PROTECT and PROTECTED.match(branch or "x"):
+            return f"This commits on protected branch '{branch}'."
         return None
 
     if sub in ("switch", "checkout"):
@@ -655,10 +659,18 @@ def check_git(args: list[str], state: dict) -> str | None:
                 break
         return None
 
+    # these run git hooks too, and am's -n is its --no-verify (merge's, pull's and rebase's -n is --no-stat)
+    if sub in ("merge", "pull", "rebase", "am") and any(
+            long_opt(a, "--no-verify") or sub == "am" and "n" in short_flags(a) for a in rest):
+        return "Skipping git hooks (--no-verify) is forbidden."
+
     if sub in ("merge", "cherry-pick", "revert", "am"):
         branch = state.get("branch") or current_branch()
-        if PROTECTED.match(branch or "x") and not any(a in ("--abort", "--quit") for a in rest):
-            return f"git {sub} on protected branch '{branch}' is forbidden. Do it on a feature branch and open a PR."
+        names = [a for a in rest if not a.startswith("-")]
+        if sub == "merge" and names and set(names) <= {"@{u}", "@{upstream}", f"origin/{branch}"}:
+            return None  # the branch's own upstream, as git pull merges it
+        if PROTECT and PROTECTED.match(branch or "x") and not any(a in ("--abort", "--quit") for a in rest):
+            return f"This runs git {sub} on protected branch '{branch}'."
         return None
 
     if sub == "reset" and any(long_opt(a, "--hard") for a in rest):
@@ -1415,7 +1427,8 @@ def check(cmd: str, depth: int = 0, state: dict | None = None, shell: str = "bas
 
 
 def main() -> int:
-    cmd = ""
+    global PROTECT
+    cmd, ask = "", False
     try:  # Claude Code runs the command on any exit code but 2, so a crash here must block
         data = json.loads(sys.stdin.buffer.read())  # bytes: Claude Code sends UTF-8, Windows would decode as cp1252
         shell = {"Bash": "bash", "PowerShell": "powershell"}.get(data.get("tool_name"))
@@ -1423,10 +1436,25 @@ def main() -> int:
             return 0
         cmd = (data.get("tool_input") or {}).get("command", "")
         reason = "Command too long to verify." if len(cmd) > MAX_COMMAND else check(cmd, shell=shell)
+        if reason and len(cmd) <= MAX_COMMAND:
+            PROTECT = False
+            hard = check(cmd, shell=shell)  # what else refuses it, if anything
+            if hard:
+                reason = hard
+            elif data.get("permission_mode") in ("bypassPermissions", "plan"):  # plan can run bypass too
+                reason += f" {data['permission_mode']} mode may not ask you, so it's blocked."
+            else:
+                ask = True
     except TimeoutError as e:
         reason = str(e)
     except Exception as e:
         reason = f"Could not read or check this command ({type(e).__name__}), so it can't be verified."
+    if ask:  # Claude Code shows the user this reason, or in a -p run, where no one can answer, refuses and shows Claude
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "ask",
+            "permissionDecisionReason": f"build-crew guard: {reason} Allow it only if you asked for it. Otherwise "
+                                        "work on a feature branch and open a PR."}}))
+        return 0
     if reason:
         print(f"BLOCKED by build-crew guard: {reason}\nCommand: {str(cmd).strip()[:300]}", file=sys.stderr)
         return 2

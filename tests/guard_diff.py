@@ -3,8 +3,8 @@
     python tests/guard_diff.py [ref]        # ref defaults to origin/main
 
 Both versions read every case in test_guard.py, and commands built from dangerous ones: wrapped, piped, substituted,
-grouped, quoted, on another line, and twice over. It lists each command the other version blocks and this one allows,
-and each this one crashes on, and exits 1 if there's any. Each allowed one is a bypass, or a command the other version
+grouped, quoted, on another line, and twice over. It lists each command the other version blocks and this one allows
+or only asks the user about, and each this one crashes on, and exits 1 if there's any. Each allowed one is a bypass, or a command the other version
 wrongly blocked, which the PR says. A crash blocks, so it doesn't show as a bypass, but it refuses harmless commands.
 Nothing is run: the guard only reads the commands."""
 from __future__ import annotations
@@ -46,10 +46,20 @@ def load(name: str, path: str):
 
 
 def decide(guard, cmd: str, shell: str) -> str | None:
-    """What the hook does with cmd: a reason to block it, or None. A crash blocks, as in main()."""
+    """What the hook does with cmd: a reason to block it, "ask: " and a reason to ask the user, or None. A crash
+    blocks, as in main()."""
     guard.STARTED = time.monotonic()
     try:
-        return "Command too long to verify." if len(cmd) > guard.MAX_COMMAND else guard.check(cmd, shell=shell)
+        if len(cmd) > guard.MAX_COMMAND:
+            return "Command too long to verify."
+        reason = guard.check(cmd, shell=shell)
+        if reason and hasattr(guard, "PROTECT"):  # a version that asks before a protected branch changes
+            guard.PROTECT = False
+            try:
+                reason = guard.check(cmd, shell=shell) or f"ask: {reason}"
+            finally:
+                guard.PROTECT = True
+        return reason
     except Exception as e:
         return f"crash: {type(e).__name__}: {e}"
 
@@ -57,8 +67,8 @@ def decide(guard, cmd: str, shell: str) -> str | None:
 def corpus() -> list[tuple[str, str]]:
     sys.path.insert(0, TESTS)
     import test_guard as t
-    cases = [("bash", c) for c in t.BLOCKED + t.ALLOWED + t.UNPARSEABLE + list(t.OWN_PLACEHOLDERS)]
-    cases += [("powershell", c) for c in t.PS_BLOCKED + t.PS_ALLOWED + t.PS_UNPARSEABLE]
+    cases = [("bash", c) for c in t.BLOCKED + t.ASKED + t.ALLOWED + t.UNPARSEABLE + list(t.OWN_PLACEHOLDERS)]
+    cases += [("powershell", c) for c in t.PS_BLOCKED + t.PS_ASKED + t.PS_ALLOWED + t.PS_UNPARSEABLE]
     cases += [("bash", c) for c in wrapped(WRAPS, DANGER)]
     cases += [("powershell", c) for c in wrapped(PS_WRAPS, PS_DANGER)]
     return list(dict.fromkeys(cases))
@@ -83,20 +93,22 @@ def main() -> int:
         base = load("guard_base", path)
     head = load("guard_head", os.path.join(ROOT, "hooks", "guard.py"))
     cases = corpus()
-    allowed, crashed, blocked = [], [], 0
+    allowed, asked, crashed, blocked = [], [], [], 0
     for shell, cmd in cases:
         was, now = decide(base, cmd, shell), decide(head, cmd, shell)
         if was and not now:
             allowed.append((shell, cmd, f"{ref} blocks it: {was}"))
+        elif (now or "").startswith("ask:") and was and not was.startswith("ask:"):
+            asked.append((shell, cmd, f"{ref} blocks it: {was}"))
         elif (now or "").startswith("crash:") and not (was or "").startswith("crash:"):
             crashed.append((shell, cmd, now))
         blocked += bool(now and not was)
     sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
-    for shell, cmd, why in allowed + crashed:
+    for shell, cmd, why in allowed + [(s, c, "asked about now; " + w) for s, c, w in asked] + crashed:
         print(f"[{shell}] {cmd!r}\n    {why}")
-    print(f"{len(cases)} commands: {len(allowed)} that {ref} blocks are allowed now, {blocked} that it allows are "
-          f"blocked now, {len(crashed)} that crash the guard now.")
-    return 1 if allowed or crashed else 0
+    print(f"{len(cases)} commands: {len(allowed)} that {ref} blocks are allowed now, {len(asked)} are asked about now, "
+          f"{blocked} that it allows are refused now, {len(crashed)} that crash the guard now.")
+    return 1 if allowed or asked or crashed else 0
 
 
 if __name__ == "__main__":
