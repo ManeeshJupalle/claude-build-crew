@@ -479,7 +479,9 @@ UNPARSEABLE = [
 ]
 
 # one of the guard's own placeholders, typed or from a $'' escape, would read back as # or ; in eval or bash -c
-OWN_PLACEHOLDERS = ["eval $'echo x \\ue008; git push --force'", "eval 'echo x \ue008; git push --force'"]
+OWN_PLACEHOLDERS = {"eval 'echo x \ue008; git push --force'": "E008",
+                    "eval $'echo x \\ue001; git push --force'": "E001",
+                    "eval $'echo x \\ue00f; git push --force'": "E00F"}  # not one the guard uses yet
 
 ALLOWED = [
     "git push -u origin feat/resume-export",
@@ -956,10 +958,10 @@ def test_blocks_what_it_cannot_parse(tool, cmd, feature_repo):
     assert res.returncode == 2 and b"Could not parse" in res.stderr
 
 
-@pytest.mark.parametrize("cmd", OWN_PLACEHOLDERS)
-def test_refuses_the_guards_own_placeholders(cmd):
+@pytest.mark.parametrize("cmd,code", OWN_PLACEHOLDERS.items())
+def test_refuses_the_guards_own_placeholders(cmd, code):
     res = run_guard(cmd)
-    assert res.returncode == 2 and b"holds U+E008, a character the guard uses internally" in res.stderr
+    assert res.returncode == 2 and f"holds U+{code}, a character the guard reserves".encode() in res.stderr
 
 
 @pytest.mark.parametrize("cmd", ["gh pr merge 12 --squash", "gh api -X PUT repos/o/r/pulls/12/merge"])
@@ -1002,6 +1004,12 @@ def test_push_head_allowed_on_feature_branch(feature_repo):
 def test_checkout_to_feature_branch_then_commit_is_allowed(repo):
     subprocess.run(["git", "branch", "feat/z"], cwd=repo, check=True)
     assert guard("git checkout feat/z && git commit -m 'feat: z'", cwd=repo) == 0
+
+
+def test_allowing_prints_nothing(feature_repo):
+    # Python 3.12+ warns of an invalid escape in the hook's source on every run, before any reason it gives
+    res = run_guard("git status", cwd=feature_repo)
+    assert res.returncode == 0 and res.stderr == b""
 
 
 def test_ignores_other_tools():

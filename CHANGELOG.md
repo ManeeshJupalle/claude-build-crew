@@ -2,7 +2,8 @@
 
 ## [Unreleased]
 ### Fixed
-- When the guard refuses a command holding one of its own placeholder characters, it says so and names the character. Before, it said "Could not parse this command (unbalanced quotes?)". (#67)
+- When the guard refuses a command holding a character it reserves for its own use, it says so and names the character. Before, it said "Could not parse this command (unbalanced quotes?)". (#67)
+- On Python 3.12 and later, the guard no longer prints a `SyntaxWarning` on every run, which came before any reason it gave. (#67)
 
 ## [0.5.2] - 2026-11-09
 ### Added

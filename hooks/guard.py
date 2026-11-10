@@ -145,7 +145,7 @@ def local_branch_exists(name: str) -> bool:
 
 
 def ansi_c(cmd: str, j: int) -> tuple[str, int]:
-    """The text the character at j stands for in $'...', and where the next one starts: \n, \x2d, \55, \u002d,
+    r"""The text the character at j stands for in $'...', and where the next one starts: \n, \x2d, \55, \u002d,
     \cA, \' and \\ as bash reads them. An escape bash doesn't know keeps its backslash."""
     if cmd[j] != "\\":
         return cmd[j], j + 1
@@ -1370,7 +1370,7 @@ def check(cmd: str, depth: int = 0, state: dict | None = None, shell: str = "bas
         readings = [(tokenize(text), inner, writes) for text, inner, writes in dict.fromkeys(
             (text, tuple(inner), tuple(writes)) for text, inner, writes in readings)]
     except Placeholder as e:
-        return f"This command holds U+{ord(str(e)):04X}, a character the guard uses internally, so it can't be verified."
+        return f"This command holds U+{ord(str(e)):04X}, a character the guard reserves for its own use, so it can't be verified."
     except ValueError:
         return "Could not parse this command (unbalanced quotes?), so it can't be verified."
     begin, ends, checked = dict(state), [], {}

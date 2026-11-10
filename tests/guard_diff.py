@@ -57,7 +57,7 @@ def decide(guard, cmd: str, shell: str) -> str | None:
 def corpus() -> list[tuple[str, str]]:
     sys.path.insert(0, TESTS)
     import test_guard as t
-    cases = [("bash", c) for c in t.BLOCKED + t.ALLOWED + t.UNPARSEABLE + t.OWN_PLACEHOLDERS]
+    cases = [("bash", c) for c in t.BLOCKED + t.ALLOWED + t.UNPARSEABLE + list(t.OWN_PLACEHOLDERS)]
     cases += [("powershell", c) for c in t.PS_BLOCKED + t.PS_ALLOWED + t.PS_UNPARSEABLE]
     cases += [("bash", c) for c in wrapped(WRAPS, DANGER)]
     cases += [("powershell", c) for c in wrapped(PS_WRAPS, PS_DANGER)]
