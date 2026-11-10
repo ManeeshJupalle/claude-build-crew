@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from conftest import BASH, HOOKS, ROOT
+from conftest import BASH, HOOKS, ROOT, make_repo
 
 BLOCKED = [
     # force push, every spelling
@@ -920,8 +920,10 @@ def guard(cmd: str, tool: str = "Bash", cwd=None) -> int:
     return run_guard(cmd, tool, cwd).returncode
 
 
-@pytest.fixture
-def feature_repo(repo):
+@pytest.fixture(scope="module")
+def feature_repo(tmp_path_factory):
+    # the guard only reads the repo, so every case shares one: a repo per case took most of this file's time
+    repo = make_repo(tmp_path_factory.mktemp("repo"))
     subprocess.run(["git", "switch", "-q", "-c", "feat/x"], cwd=repo, check=True)
     return repo
 

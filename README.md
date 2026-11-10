@@ -134,7 +134,7 @@ Gates make the important checks repeatable and visible. They are not a security 
 
 ## Contributing
 
-Issues and PRs are welcome, especially new gates, agents, and stack support in `checks.py`. Start with [CONTRIBUTING.md](CONTRIBUTING.md). `pytest -q` runs 500+ tests in about a minute on Linux (a few minutes on Windows), with no network.
+Issues and PRs are welcome, especially new gates, agents, and stack support in `checks.py`. Start with [CONTRIBUTING.md](CONTRIBUTING.md). `pytest -q` runs 1,000+ tests in about a minute on Linux (about six minutes on Windows), with no network.
 
 ## License
 
