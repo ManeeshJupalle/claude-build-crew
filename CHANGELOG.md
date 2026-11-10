@@ -1,7 +1,11 @@
 # Changelog
 
 ## [Unreleased]
+### Changed
+- A commit, push or merge on a protected branch (`main`, `master`, `develop`, `release/*`) asks you first instead of being blocked, so Claude can push to main when you tell it to. In a `-p` run, where no one can answer, Claude Code refuses it as before. Force-push, deleting a protected branch and every other block stay, and win when the same command also does one of them. (#68)
+
 ### Fixed
+- Merging a branch's own upstream on a protected branch, such as `git merge --ff-only origin/main`, is allowed, as `git pull` is. (#68)
 - When the guard refuses a command holding a character it reserves for its own use, it says so and names the character. Before, it said "Could not parse this command (unbalanced quotes?)". (#67)
 - On Python 3.12 and later, the guard no longer prints a `SyntaxWarning` on every run, which came before any reason it gave. (#67)
 

@@ -18,12 +18,6 @@ BLOCKED = [
     "git push origin +feat/x",
     "git -C . push --force",
     "git --no-pager push --force",
-    # protected branches, every spelling
-    "git push origin main",
-    "git push origin HEAD:master",
-    "git push origin feat/x:main",
-    "git push origin HEAD:refs/heads/main",
-    "git push origin release/1.2",
     "git push --all",
     "git push origin --delete feat/old",
     "git push origin :feat/old",                       # an empty source deletes the remote branch
@@ -158,9 +152,6 @@ BLOCKED = [
     "export HUSKY=0",
     "SKIP=lint git commit -m x",
     "gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }'",
-    "git checkout main && git merge feat/x && git push",
-    "git checkout main && git commit -m x",
-    "git checkout main\ngit commit -m x",
     # Windows and macOS spellings of the same programs
     "git.exe push --force",
     "\"/c/Program Files/Git/cmd/git.exe\" push --force",
@@ -242,7 +233,6 @@ BLOCKED = [
     "pwsh -WorkingDirectory /c -Command 'Remove-Item -Recurse -Force ~'",
     "pwsh -wd /f -c 'git -C D:/repo push --force'",
     "pwsh -wd /c -enc ZwBpAHQA",
-    "pwsh -wd /c -c 'git switch main' && git commit -m x",
     # comments end at the line's end, and only start a word
     "# Let's reset\ngit reset --hard origin/feat/x\n# That's it",
     "git push origin a#b --force",
@@ -462,10 +452,24 @@ BLOCKED = [
     "git push $'\\55\\55force'",
     "git push $'\\u002d-force'",
     "git commit -m x $'\\x2dn'",
-    "git push origin $'\\x6d\\x61\\x69\\x6e'",
     "echo $'\\c\\'x' ; git push --force #'",   # bash pairs \c's \ with the quote
-    "git push origin $'main\\0x'",                 # bash ends the string at the NUL: main
     "eval $'true\\cJgit push --force'",            # \cJ is a newline
+]
+
+# a commit, push or merge on a protected branch: the guard asks the user instead of blocking
+ASKED = [
+    # protected branches, every spelling
+    "git push origin main",
+    "git push origin HEAD:master",
+    "git push origin feat/x:main",
+    "git push origin HEAD:refs/heads/main",
+    "git push origin release/1.2",
+    "git checkout main && git merge feat/x && git push",
+    "git checkout main && git commit -m x",
+    "git checkout main\ngit commit -m x",
+    "pwsh -wd /c -c 'git switch main' && git commit -m x",
+    "git push origin $'\\x6d\\x61\\x69\\x6e'",
+    "git push origin $'main\\0x'",                 # bash ends the string at the NUL: main
 ]
 
 # blocked because they can't be parsed, the only cases allowed to block that way
@@ -636,7 +640,6 @@ ALLOWED = [
 # commands from Claude Code's PowerShell tool
 PS_BLOCKED = [
     "git push --force",
-    "git push origin main",
     "git reset --hard; Write-Host done",
     "gh pr merge 7",
     # chaining and blocks (PowerShell 5.1 has no &&, so Claude chains with if ($?))
@@ -691,7 +694,6 @@ PS_BLOCKED = [
     "$out = git push --force 2>&1",
     "$null = git reset --hard HEAD~1",
     "$res = gh pr merge 26 --squash",
-    "$out=git push origin main",
     "[string]$a = $b = git push -f",
     "$log += git push --force",
     "rm -rf ~",
@@ -721,7 +723,6 @@ PS_BLOCKED = [
     "git push origin ('--force', 'x')",
     "& ('git') push --force",
     "Remove-Item -Recurse -Force ('~')",
-    "git push origin ('main')",
     "pwsh -c ('git push --force')",
     "$env:HUSKY = (0)",
     "Set-Item env:HUSKY -Value:0",
@@ -798,11 +799,6 @@ PS_BLOCKED = [
     "git push origin $(if ($x) {'a'; '--force'})",
     "git push origin @(foreach ($i in 1) {'a'; '--force'})",
     "git commit -m x $(if ($x) {'a'\n'--no-verify'})",
-    # a group that may not run doesn't change the branch later commands run on
-    "git switch main; if (-not $?) { git switch -c fix/x }; git push origin HEAD",
-    "git checkout main; ($x -and (git checkout -b feat/y)); git push",
-    "git checkout main; try { git checkout -b feat/y } catch { }; git merge feat/z",
-    "git checkout main; git push origin $(if ($x) {'HEAD'; git checkout -b feat/y})",
     # '-' pieces after an assignment or a dot, or after an empty string
     "$o = git reset ('--' + 'hard')",
     ". git reset ('--' + 'hard')",
@@ -817,6 +813,18 @@ PS_BLOCKED = [
     "$(try { 'a' } catch { } git push origin ('--force'))",
     # a group left open is still checked
     "$(1; git push origin ('--force')",
+]
+
+# the same from PowerShell
+PS_ASKED = [
+    "git push origin main",
+    "$out=git push origin main",
+    "git push origin ('main')",
+    # a group that may not run doesn't change the branch later commands run on
+    "git switch main; if (-not $?) { git switch -c fix/x }; git push origin HEAD",
+    "git checkout main; ($x -and (git checkout -b feat/y)); git push",
+    "git checkout main; try { git checkout -b feat/y } catch { }; git merge feat/z",
+    "git checkout main; git push origin $(if ($x) {'HEAD'; git checkout -b feat/y})",
 ]
 
 PS_UNPARSEABLE = ["git commit -m 'unbalanced", "git push --force`",
@@ -918,8 +926,13 @@ def run_guard(cmd: str, tool: str = "Bash", cwd=None) -> subprocess.CompletedPro
                           capture_output=True, cwd=cwd)
 
 
-def guard(cmd: str, tool: str = "Bash", cwd=None) -> int:
-    return run_guard(cmd, tool, cwd).returncode
+def guard(cmd: str, tool: str = "Bash", cwd=None) -> str:
+    """block, ask or allow: an ask exits 0 too, with Claude Code's permission prompt on stdout."""
+    res = run_guard(cmd, tool, cwd)
+    if res.returncode == 2:
+        return "block"
+    assert res.returncode == 0, res.returncode
+    return json.loads(res.stdout)["hookSpecificOutput"]["permissionDecision"] if res.stdout.strip() else "allow"
 
 
 @pytest.fixture(scope="module")
@@ -938,7 +951,7 @@ def test_blocks(cmd, feature_repo):
 
 @pytest.mark.parametrize("cmd", ALLOWED)
 def test_allows(cmd, feature_repo):
-    assert guard(cmd, cwd=feature_repo) == 0
+    assert guard(cmd, cwd=feature_repo) == "allow"
 
 
 @pytest.mark.parametrize("cmd", PS_BLOCKED)
@@ -949,7 +962,28 @@ def test_blocks_powershell(cmd, feature_repo):
 
 @pytest.mark.parametrize("cmd", PS_ALLOWED)
 def test_allows_powershell(cmd, feature_repo):
-    assert guard(cmd, tool="PowerShell", cwd=feature_repo) == 0
+    assert guard(cmd, tool="PowerShell", cwd=feature_repo) == "allow"
+
+
+@pytest.mark.parametrize("tool,cmd", [("Bash", c) for c in ASKED] + [("PowerShell", c) for c in PS_ASKED])
+def test_asks_before_changing_a_protected_branch(tool, cmd, feature_repo):
+    res = run_guard(cmd, tool, feature_repo)
+    out = json.loads(res.stdout)["hookSpecificOutput"]
+    assert res.returncode == 0 and out["permissionDecision"] == "ask" and "protected branch" in out[
+        "permissionDecisionReason"]
+
+
+def test_a_block_elsewhere_in_the_command_wins_over_asking(repo):
+    # on main the commit only needs a yes, but the force push is refused, and named
+    res = run_guard("git commit -m x && git push --force", cwd=repo)
+    assert res.returncode == 2 and b"Force push is forbidden" in res.stderr and not res.stdout
+
+
+def test_merging_the_branchs_own_upstream_is_allowed(repo):
+    for cmd in ("git merge --ff-only origin/main", "git merge --no-edit origin/main", "git merge @{u}"):  # git pull
+        assert guard(cmd, cwd=repo) == "allow"
+    assert guard("git merge feat/x", cwd=repo) == "ask"
+    assert guard("git merge origin/main feat/x", cwd=repo) == "ask"
 
 
 @pytest.mark.parametrize("tool,cmd", [("Bash", c) for c in UNPARSEABLE] + [("PowerShell", c) for c in PS_UNPARSEABLE])
@@ -972,38 +1006,38 @@ def test_merge_block_gives_the_full_gate_command(cmd, feature_repo):
 
 
 def test_powershell_tracks_branch(repo):
-    assert guard("git commit -m x", tool="PowerShell", cwd=repo) == 2  # on main
-    assert guard("git switch -c feat/y; if ($?) { git commit -m 'feat: y' }", tool="PowerShell", cwd=repo) == 0
+    assert guard("git commit -m x", tool="PowerShell", cwd=repo) == "ask"  # on main
+    assert guard("git switch -c feat/y; if ($?) { git commit -m 'feat: y' }", tool="PowerShell", cwd=repo) == "allow"
 
 
-def test_blocks_commit_and_bare_push_on_protected_branch(repo):
-    assert guard("git commit -m x", cwd=repo) == 2  # repo fixture is on main
-    assert guard("git push", cwd=repo) == 2
-    assert guard("env -S 'git push origin\\_#x'", cwd=repo) == 2  # \_ ends a word, so #x is a comment
+def test_asks_before_commit_and_bare_push_on_protected_branch(repo):
+    assert guard("git commit -m x", cwd=repo) == "ask"  # repo fixture is on main
+    assert guard("git push", cwd=repo) == "ask"
+    assert guard("env -S 'git push origin\\_#x'", cwd=repo) == "ask"  # \_ ends a word, so #x is a comment
 
 
 def test_tracks_branch_switch_inside_one_command(repo):
-    assert guard("git switch -c feat/y && git commit -m 'feat: y'", cwd=repo) == 0
-    assert guard("git switch main && git commit -m x", cwd=repo.parent) == 2
-    assert guard("{ git commit -m x; }; git switch -c feat/y", cwd=repo) == 2  # the commit runs on main
+    assert guard("git switch -c feat/y && git commit -m 'feat: y'", cwd=repo) == "allow"
+    assert guard("git switch main && git commit -m x", cwd=repo.parent) == "ask"
+    assert guard("{ git commit -m x; }; git switch -c feat/y", cwd=repo) == "ask"  # the commit runs on main
     # bash reads this << as a heredoc, as a[ is a subscript only in an assignment: the switch in its body never runs
-    assert guard("echo a[ <<EOF\ngit switch -c feat/y\nEOF\ngit commit -m x", cwd=repo) == 2
+    assert guard("echo a[ <<EOF\ngit switch -c feat/y\nEOF\ngit commit -m x", cwd=repo) == "ask"
     # one reading of this << runs the switch to main: what follows starts there
-    assert guard("git switch -c feat/y; eval $'((x<<y))\ngit switch main\ny'; git commit -m x", cwd=repo) == 2
+    assert guard("git switch -c feat/y; eval $'((x<<y))\ngit switch main\ny'; git commit -m x", cwd=repo) == "ask"
 
 
 def test_push_head_resolves_to_current_branch(repo, feature_repo=None):
-    assert guard("git push -u origin HEAD", cwd=repo) == 2     # on main
-    assert guard("git push origin HEAD:refs/heads/main", cwd=repo) == 2
+    assert guard("git push -u origin HEAD", cwd=repo) == "ask"     # on main
+    assert guard("git push origin HEAD:refs/heads/main", cwd=repo) == "ask"
 
 
 def test_push_head_allowed_on_feature_branch(feature_repo):
-    assert guard("git push -u origin HEAD", cwd=feature_repo) == 0
+    assert guard("git push -u origin HEAD", cwd=feature_repo) == "allow"
 
 
 def test_checkout_to_feature_branch_then_commit_is_allowed(repo):
     subprocess.run(["git", "branch", "feat/z"], cwd=repo, check=True)
-    assert guard("git checkout feat/z && git commit -m 'feat: z'", cwd=repo) == 0
+    assert guard("git checkout feat/z && git commit -m 'feat: z'", cwd=repo) == "allow"
 
 
 def test_allowing_prints_nothing(feature_repo):
@@ -1013,13 +1047,13 @@ def test_allowing_prints_nothing(feature_repo):
 
 
 def test_ignores_other_tools():
-    assert guard("git push --force", tool="Read") == 0
+    assert guard("git push --force", tool="Read") == "allow"
 
 
 def test_fails_closed():
     res = subprocess.run([sys.executable, str(HOOKS / "guard.py")], input="not json", text=True, capture_output=True)
     assert res.returncode == 2
-    assert guard("git commit -m 'unbalanced") == 2
+    assert guard("git commit -m 'unbalanced") == "block"
 
 
 def test_blocks_when_the_check_crashes():
@@ -1056,7 +1090,7 @@ def test_blocks_commands_too_long_or_slow_to_check(monkeypatch):
 @pytest.mark.parametrize("unit,limit", [("(Join-Path ", 20), ("('a'; ", 50)])
 def test_powershell_refuses_deep_nesting(unit, limit):
     # each level of groups costs time, so past a depth no real command reaches, the guard refuses
-    assert guard(unit * limit + "x" + ")" * limit, tool="PowerShell") == 0
+    assert guard(unit * limit + "x" + ")" * limit, tool="PowerShell") == "allow"
     res = run_guard(unit * (limit + 1) + "x" + ")" * (limit + 1), "PowerShell")
     assert res.returncode == 2 and b"nesting too deep" in res.stderr
 
