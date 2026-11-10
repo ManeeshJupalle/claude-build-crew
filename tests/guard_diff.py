@@ -3,8 +3,8 @@
     python tests/guard_diff.py [ref]        # ref defaults to origin/main
 
 Both versions read every case in test_guard.py, and commands built from dangerous ones: wrapped, piped, substituted,
-grouped, quoted, on another line, and twice over. It lists each command the other version blocks and this one allows,
-and each this one crashes on, and exits 1 if there's any. Each allowed one is a bypass, or a command the other version
+grouped, quoted, on another line, and twice over. It lists each command the other version blocks and this one allows
+or only asks the user about, and each this one crashes on, and exits 1 if there's any. Each allowed one is a bypass, or a command the other version
 wrongly blocked, which the PR says. A crash blocks, so it doesn't show as a bypass, but it refuses harmless commands.
 Nothing is run: the guard only reads the commands."""
 from __future__ import annotations

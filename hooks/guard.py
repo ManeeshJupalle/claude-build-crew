@@ -659,6 +659,11 @@ def check_git(args: list[str], state: dict) -> str | None:
                 break
         return None
 
+    # these run git hooks too, and am's -n is its --no-verify (merge's, pull's and rebase's -n is --no-stat)
+    if sub in ("merge", "pull", "rebase", "am") and any(
+            long_opt(a, "--no-verify") or sub == "am" and "n" in short_flags(a) for a in rest):
+        return "Skipping git hooks (--no-verify) is forbidden."
+
     if sub in ("merge", "cherry-pick", "revert", "am"):
         branch = state.get("branch") or current_branch()
         names = [a for a in rest if not a.startswith("-")]
@@ -1434,7 +1439,12 @@ def main() -> int:
         if reason and len(cmd) <= MAX_COMMAND:
             PROTECT = False
             hard = check(cmd, shell=shell)  # what else refuses it, if anything
-            reason, ask = (hard, False) if hard else (reason, True)
+            if hard:
+                reason = hard
+            elif data.get("permission_mode") == "bypassPermissions":  # it skips the prompt that would ask
+                reason += " bypassPermissions mode wouldn't ask you, so it's blocked."
+            else:
+                ask = True
     except TimeoutError as e:
         reason = str(e)
     except Exception as e:
