@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 ### Changed
-- A commit, push or merge on a protected branch (`main`, `master`, `develop`, `release/*`) asks you first instead of being blocked, so Claude can push to main when you tell it to. In a `-p` run, where no one can answer, Claude Code refuses it, and in `bypassPermissions` mode, which skips the prompt, the guard still blocks it. Force-push, deleting a protected branch and every other block stay, and win when the same command also does one of them. (#68)
+- A commit, push or merge on a protected branch (`main`, `master`, `develop`, `release/*`) asks you first instead of being blocked, so Claude can push to main when you tell it to. In a `-p` run, where no one can answer, Claude Code refuses it, and in `bypassPermissions` or plan mode, which can skip the prompt, the guard still blocks it. Force-push, deleting a protected branch and every other block stay, and win when the same command also does one of them. (#68)
 
 ### Fixed
 - Merging a branch's own upstream on a protected branch, such as `git merge --ff-only origin/main`, is allowed, as `git pull` is. (#68)

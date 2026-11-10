@@ -1441,8 +1441,8 @@ def main() -> int:
             hard = check(cmd, shell=shell)  # what else refuses it, if anything
             if hard:
                 reason = hard
-            elif data.get("permission_mode") == "bypassPermissions":  # it skips the prompt that would ask
-                reason += " bypassPermissions mode wouldn't ask you, so it's blocked."
+            elif data.get("permission_mode") in ("bypassPermissions", "plan"):  # plan can run bypass too
+                reason += f" {data['permission_mode']} mode may not ask you, so it's blocked."
             else:
                 ask = True
     except TimeoutError as e:

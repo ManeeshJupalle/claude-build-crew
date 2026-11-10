@@ -108,7 +108,7 @@ BLOCKED = [
     "git commit -n -m x",
     "git commit -anm x",
     "git merge --no-verify feat/y",                   # merge, pull, rebase and am run hooks too
-    "git merge --no-verif feat/y",
+    "git rebase --no-verif main",
     "git pull --no-verify",
     "git rebase --no-verify main",
     "git am --no-verify x.patch",
@@ -994,12 +994,13 @@ def test_merging_the_branchs_own_upstream_is_allowed(repo):
     assert guard("git merge --no-verify origin/main", cwd=repo) == "block"
 
 
-def test_blocks_instead_of_asking_when_nothing_would_ask(repo):
-    # bypassPermissions mode skips permission prompts, so an ask would run the command unasked
-    data = {"tool_name": "Bash", "tool_input": {"command": "git push"}, "permission_mode": "bypassPermissions"}
+@pytest.mark.parametrize("mode", ["bypassPermissions", "plan"])
+def test_blocks_instead_of_asking_when_nothing_would_ask(mode, repo):
+    # bypassPermissions mode skips permission prompts, and plan mode can run with it: an ask could run unasked
+    data = {"tool_name": "Bash", "tool_input": {"command": "git push"}, "permission_mode": mode}
     res = subprocess.run([sys.executable, str(HOOKS / "guard.py")], input=json.dumps(data).encode(),
                          capture_output=True, cwd=repo)
-    assert res.returncode == 2 and b"bypassPermissions" in res.stderr and not res.stdout
+    assert res.returncode == 2 and f"{mode} mode may not ask you".encode() in res.stderr and not res.stdout
 
 
 @pytest.mark.parametrize("error", [TimeoutError("Took too long to verify."), ZeroDivisionError()])
