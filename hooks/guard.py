@@ -145,7 +145,7 @@ def local_branch_exists(name: str) -> bool:
 
 
 def ansi_c(cmd: str, j: int) -> tuple[str, int]:
-    """The text the character at j stands for in $'...', and where the next one starts: \n, \x2d, \55, \u002d,
+    r"""The text the character at j stands for in $'...', and where the next one starts: \n, \x2d, \55, \u002d,
     \cA, \' and \\ as bash reads them. An escape bash doesn't know keeps its backslash."""
     if cmd[j] != "\\":
         return cmd[j], j + 1
@@ -332,14 +332,19 @@ def body_substitutions(cmd: str, i: int, stop: int, lines: dict, inner: list[str
             i += 1
 
 
+class Placeholder(ValueError):
+    """A command holding one of the guard's own placeholder characters, the one found."""
+
+
 def prescan(cmd: str, shifts: bool) -> tuple[str, list[str], list[int]]:
     """shlex returns a quoted ';' the same as a bare one, and splits $(...) into words. So before tokenizing, swap
     quoted or escaped separators for placeholders, and turn each $(...) and `...` into one word, returning the
     commands inside to be checked on their own, and which of them are in a >(...), reading what the command writes.
     Each redirect becomes a word of its own (x>f is x >f), and heredoc bodies are data (commit messages, PR bodies),
     not commands: drop them, keeping the line each starts on. shifts: read a << in $((…)) and the like as a shift."""
-    if set(cmd) & set(RESTORE_CHARS):  # one of ours, typed: eval and bash -c would read it back as ; or #
-        raise ValueError("a placeholder character")
+    typed = set(cmd) & set(RESTORE_CHARS)
+    if typed:  # one of ours, typed: eval and bash -c would read it back as ; or #
+        raise Placeholder(min(typed))
     out, inner, writes, quote, i, heredocs, lines, nest = [], [], [], None, 0, [], {}, [0, 0, 0]
     while i < len(cmd):
         c = cmd[i]
@@ -363,8 +368,9 @@ def prescan(cmd: str, shifts: bool) -> tuple[str, list[str], list[int]]:
             if j >= len(cmd):
                 raise ValueError("unbalanced quotes")
             text = "".join(text).split("\0")[0]  # bash ends the string at a NUL
-            if any("\ue000" <= ch <= "\ue0ff" for ch in text):  # $'\ue008' would read back as # in eval or bash -c
-                raise ValueError("a placeholder character")
+            ours = [ch for ch in text if "\ue000" <= ch <= "\ue0ff"]
+            if ours:  # $'\ue008' would read back as # in eval or bash -c
+                raise Placeholder(ours[0])
             out.append("'" + "".join(PLACEHOLDERS.get(ch, ch) for ch in text).replace("'", "'\"'\"'") + "'")
             i = j + 1
         elif c == "#" and quote is None and (not out or out[-1] in COMMENT_START):  # a comment runs to the line's end
@@ -1363,6 +1369,8 @@ def check(cmd: str, depth: int = 0, state: dict | None = None, shell: str = "bas
         readings = [prescan(cmd, shifts) for shifts in ((True, False) if "<<" in cmd else (True,))]
         readings = [(tokenize(text), inner, writes) for text, inner, writes in dict.fromkeys(
             (text, tuple(inner), tuple(writes)) for text, inner, writes in readings)]
+    except Placeholder as e:
+        return f"This command holds U+{ord(str(e)):04X}, a character the guard reserves for its own use, so it can't be verified."
     except ValueError:
         return "Could not parse this command (unbalanced quotes?), so it can't be verified."
     begin, ends, checked = dict(state), [], {}

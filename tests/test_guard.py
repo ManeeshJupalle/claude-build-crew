@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from conftest import BASH, HOOKS, ROOT
+from conftest import BASH, HOOKS, ROOT, make_repo
 
 BLOCKED = [
     # force push, every spelling
@@ -476,10 +476,12 @@ UNPARSEABLE = [
     "cat <<\"a\\\"b\"\nx\na\"b\ngit push --force",
     "cat <<$EOF\nx\n$EOF\ngit push --force",
     "echo $((1<<y\n))\ngit push --force\ny",          # read as a heredoc too, its $(( never closes
-    # one of the guard's own placeholders, typed or from a $'' escape, would read back as # or ;
-    "eval $'echo x \\ue008; git push --force'",
-    "eval 'echo x \ue008; git push --force'",
 ]
+
+# one of the guard's own placeholders, typed or from a $'' escape, would read back as # or ; in eval or bash -c
+OWN_PLACEHOLDERS = {"eval 'echo x \ue008; git push --force'": "E008",
+                    "eval $'echo x \\ue001; git push --force'": "E001",
+                    "eval $'echo x \\ue00f; git push --force'": "E00F"}  # not one the guard uses yet
 
 ALLOWED = [
     "git push -u origin feat/resume-export",
@@ -920,8 +922,10 @@ def guard(cmd: str, tool: str = "Bash", cwd=None) -> int:
     return run_guard(cmd, tool, cwd).returncode
 
 
-@pytest.fixture
-def feature_repo(repo):
+@pytest.fixture(scope="module")
+def feature_repo(tmp_path_factory):
+    # the guard only reads the repo, so every case shares one: a repo per case took most of this file's time
+    repo = make_repo(tmp_path_factory.mktemp("repo"))
     subprocess.run(["git", "switch", "-q", "-c", "feat/x"], cwd=repo, check=True)
     return repo
 
@@ -952,6 +956,12 @@ def test_allows_powershell(cmd, feature_repo):
 def test_blocks_what_it_cannot_parse(tool, cmd, feature_repo):
     res = run_guard(cmd, tool, feature_repo)
     assert res.returncode == 2 and b"Could not parse" in res.stderr
+
+
+@pytest.mark.parametrize("cmd,code", OWN_PLACEHOLDERS.items())
+def test_refuses_the_guards_own_placeholders(cmd, code):
+    res = run_guard(cmd)
+    assert res.returncode == 2 and f"holds U+{code}, a character the guard reserves".encode() in res.stderr
 
 
 @pytest.mark.parametrize("cmd", ["gh pr merge 12 --squash", "gh api -X PUT repos/o/r/pulls/12/merge"])
@@ -994,6 +1004,12 @@ def test_push_head_allowed_on_feature_branch(feature_repo):
 def test_checkout_to_feature_branch_then_commit_is_allowed(repo):
     subprocess.run(["git", "branch", "feat/z"], cwd=repo, check=True)
     assert guard("git checkout feat/z && git commit -m 'feat: z'", cwd=repo) == 0
+
+
+def test_allowing_prints_nothing(feature_repo):
+    # Python 3.12+ warns of an invalid escape in the hook's source on every run, before any reason it gives
+    res = run_guard("git status", cwd=feature_repo)
+    assert res.returncode == 0 and res.stderr == b""
 
 
 def test_ignores_other_tools():

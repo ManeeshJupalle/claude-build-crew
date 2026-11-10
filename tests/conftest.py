@@ -33,13 +33,17 @@ def git(cwd: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True).stdout.strip()
 
 
+def make_repo(path: Path) -> Path:
+    git(path, "init", "-q", "-b", "main")
+    git(path, "config", "user.email", "test@example.com")
+    git(path, "config", "user.name", "test")
+    git(path, "config", "commit.gpgsign", "false")
+    (path / "README.md").write_text("# test\n")
+    git(path, "add", "README.md")
+    git(path, "commit", "-q", "-m", "chore: init")
+    return path
+
+
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
-    git(tmp_path, "init", "-q", "-b", "main")
-    git(tmp_path, "config", "user.email", "test@example.com")
-    git(tmp_path, "config", "user.name", "test")
-    git(tmp_path, "config", "commit.gpgsign", "false")
-    (tmp_path / "README.md").write_text("# test\n")
-    git(tmp_path, "add", "README.md")
-    git(tmp_path, "commit", "-q", "-m", "chore: init")
-    return tmp_path
+    return make_repo(tmp_path)
