@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+### Fixed
+- When the guard refuses a command holding one of its own placeholder characters, it says so and names the character. Before, it said "Could not parse this command (unbalanced quotes?)". (#67)
 
 ## [0.5.2] - 2026-11-09
 ### Added

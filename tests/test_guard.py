@@ -476,10 +476,10 @@ UNPARSEABLE = [
     "cat <<\"a\\\"b\"\nx\na\"b\ngit push --force",
     "cat <<$EOF\nx\n$EOF\ngit push --force",
     "echo $((1<<y\n))\ngit push --force\ny",          # read as a heredoc too, its $(( never closes
-    # one of the guard's own placeholders, typed or from a $'' escape, would read back as # or ;
-    "eval $'echo x \\ue008; git push --force'",
-    "eval 'echo x \ue008; git push --force'",
 ]
+
+# one of the guard's own placeholders, typed or from a $'' escape, would read back as # or ; in eval or bash -c
+OWN_PLACEHOLDERS = ["eval $'echo x \\ue008; git push --force'", "eval 'echo x \ue008; git push --force'"]
 
 ALLOWED = [
     "git push -u origin feat/resume-export",
@@ -952,6 +952,12 @@ def test_allows_powershell(cmd, feature_repo):
 def test_blocks_what_it_cannot_parse(tool, cmd, feature_repo):
     res = run_guard(cmd, tool, feature_repo)
     assert res.returncode == 2 and b"Could not parse" in res.stderr
+
+
+@pytest.mark.parametrize("cmd", OWN_PLACEHOLDERS)
+def test_refuses_the_guards_own_placeholders(cmd):
+    res = run_guard(cmd)
+    assert res.returncode == 2 and b"holds U+E008, a character the guard uses internally" in res.stderr
 
 
 @pytest.mark.parametrize("cmd", ["gh pr merge 12 --squash", "gh api -X PUT repos/o/r/pulls/12/merge"])
